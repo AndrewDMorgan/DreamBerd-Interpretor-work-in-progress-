@@ -68,16 +68,14 @@ pub enum Lifetime {
     Lines(isize),
 }
 
-pub fn tokenize(text: Vec<&'_ str>) -> Vec<Vec<(Token<'_>, &'_ str)>> {
+pub fn tokenize(text: Vec<&'_ str>) -> (Vec<Vec<(Token<'_>, &'_ str, usize, usize)>>, Vec<usize>) {
     let start = std::time::Instant::now();
     let (text, tokens, indentation) = break_tokens(text);
-    let el = start.elapsed().as_micros();
-    println!("Text: {:?} in {}", text, el);
-    println!("\nTokens: {:?} in {}", tokens, el);
-    println!("\nIndents: {:?} in {}", indentation, el);
-    let tokens = vec![];
-    
-    tokens
+    let el = start.elapsed();
+    println!("Text: {:?}", text);
+    println!("\nTokens: {:?}", tokens);
+    println!("\nIndents: {:?}\n in {:?}", indentation, el);
+    (tokens, indentation)
 }
 
 struct PtrSync<T> (T);
@@ -171,8 +169,13 @@ fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<Vec<(Token<'_>, &
     } } (*output, *tokens, *indentation)
 }
 
-pub fn is_function_ident(token: &str) -> bool {
+pub fn is_function_ident(token: &str, tokens: &Vec<&str>) -> bool {
     if token.len() > "function".len() || token.is_empty() { return false; }
+    // checking if there are any assignment symbols indicating a non-function declaration
+    if tokens.iter().any(|x| ["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "var", "const"].contains(x)) {
+        return false;
+    }
+    
     let mut function = "function";
     for i in 0..token.len() {
         let index = match function.find(&token[i..next_valid_index(i+1, token)]) {
@@ -295,7 +298,7 @@ fn combine_tokens<'a>(tokens: &mut Vec<(Token<'a>, &'a str, usize, usize)>) {
             // the other one will be replaced with the assign token
             
             // checking for the name
-            let name = &tokens[index].1[tokens[index + 1].2..tokens[index + 1].2 + tokens[index + 1].3];
+            let name = &tokens[index].1[tokens[index + 1].2..next_valid_index(tokens[index + 1].2 + tokens[index + 1].3, tokens[index].1)];
             tokens.remove(index + 1);
             
             let priority = {
@@ -308,7 +311,7 @@ fn combine_tokens<'a>(tokens: &mut Vec<(Token<'a>, &'a str, usize, usize)>) {
             };
             
             let lifetime = {
-                if matches!(tokens[index + 1].0, Token::Lifetime(..)) {
+                if index + 1 < tokens.len() && matches!(tokens[index + 1].0, Token::Lifetime(..)) {
                     match tokens.remove(index + 1).0 {
                         Token::Lifetime(lifetime) => lifetime,
                         _ => Lifetime::default()
@@ -319,7 +322,7 @@ fn combine_tokens<'a>(tokens: &mut Vec<(Token<'a>, &'a str, usize, usize)>) {
             };
             
             let new_token;
-            if tokens[index + 1].0 == Token::Compare(CompareOp::Equal, 0) {
+            if index + 1 < tokens.len() && tokens[index + 1].0 == Token::Compare(CompareOp::Equal, 0) {
                 tokens.remove(index + 1);
                 let mut right = vec![];
                 while index + 1 < tokens.len() {
@@ -366,7 +369,7 @@ fn get_indent_direction(indent_direction: &mut isize, output: &Box<Vec<Vec<&str>
         }) {
             if *indent_direction == 0 {
                 // checking if there's a syntax indicating an indent (if not, then an indent means negative, otherwise positive)
-                let is_indented = is_function_ident(line[0]) ||
+                let is_indented = is_function_ident(line[0], line) ||
                     ["class", "when", "if", "{"].contains(&line[0]);
                 if is_indented {
                     *indent_direction = 1;
@@ -436,7 +439,7 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
                 break;
             },
             "//" => { break; },
-            t if is_function_ident(t) && line_start => {
+            t if is_function_ident(t, &*line) && line_start => {
                 Token::Function(*token, vec![])
             },
             t if PRUNE.contains(&t) => {
@@ -526,7 +529,7 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
             "," => { Token::Comma() },
             
             // Are there enough nested if else's? No, never
-            t if t.parse::<isize>().is_ok() || t[0..t.len()-1].parse::<isize>().is_ok() => {
+            t if t.parse::<isize>().is_ok() || t[0..next_valid_index(t.len()-1, t)].parse::<isize>().is_ok() => {
                 if t.ends_with("s") {
                     Token::Lifetime(Lifetime::Seconds(
                         t[0..t.len()-1].parse::<isize>().unwrap()
