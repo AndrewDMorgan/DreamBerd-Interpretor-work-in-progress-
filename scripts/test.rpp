@@ -1,20 +1,45 @@
 
 ======= hello.world =======
+
+fn testing
+   print "testing..."
+
+export testing to hello.world
+
 ======= world.hello
+
+const var 🤯💀🔥 = 123!!
+const var ️❤️ = 456!!
+
 ======= hello
-=======
+======= exported.exporting
+
+import testing as test from hello.world
+export test to main.rpp
+
+======= main.rpp =======
+import test from exported.exporting
 
 print("${next t}"
 const var t = 32!!  // testing 1..2 function return
 const var t<-2s> = 3!¡¡¡
+const var v🍎❤️💀😁😔🏆🌏🖤🍍❤️🤍◾️d   (<-9> = 3¡¡
 const const 💀 = 10!!!!!!
+var var ❤️ = hello!!!!!!!!!!!!!!!!!!
 const var b!
+const const 5 = 4!
+
 t += 1!!!
 
 fnc pet g
    fat
       gun
+   nogood
+      why
+         testing
+   but_noooo
 
+noop!
 
 fncion pello (hello, world) {  // testing 1..2 function return
    return hello+world * 2

@@ -24,6 +24,10 @@ pub enum Token<'a> {
     Await    (),
     Async    (),
     Comma    (),
+    To       (),
+    As       (),
+    From     (),
+    Import   (),
     Assign   (bool, bool, Option<bool>, Lifetime, &'a str, Option<Vec<(Token<'a>, &'a str, usize, usize)>>, isize),  // is const, is const, is const, name, right side
 }
 
@@ -518,6 +522,10 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
                 Token::File()
             },
             "export" => { Token::Export() },
+            "import" => { Token::Import() },
+            "from" => { Token::From() },
+            "to" => { Token::To() },
+            "as" => { Token::As() },
             "reverse" => { Token::Reverse() },
             "previous" => { Token::Previous() },
             "next" => { Token::Next() },
@@ -534,7 +542,10 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
                     Token::Lifetime(Lifetime::Seconds(
                         t[0..t.len()-1].parse::<isize>().unwrap()
                     ))
-                } else if line[index.saturating_sub(1)] == "<" && line.get(index + 1) == Some(&">") {
+                } else if (line[index.saturating_sub(1)] == "<" ||
+                            (!tokens.is_empty() && matches!(tokens[tokens.len() - 1].0, Token::Math(MathOp::Subtract,..)))) &&
+                           line.get(index + 1) == Some(&">")
+                {
                     Token::Lifetime(Lifetime::Lines(
                         t.parse::<isize>().unwrap()
                     ))

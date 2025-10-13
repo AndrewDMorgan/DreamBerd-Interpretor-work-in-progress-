@@ -11,7 +11,7 @@ pub struct AstNode<'a> {
 pub enum AstOperation<'a> {
     ScopeChange (usize),  // the local index to the new scope for the node
     Expr        (Expression<'a>),  // a mathematical expression
-    Assignment  (Variable<'a>, Option<Expression<'a>>),  // variable name and expression for resolution of the value at runtime
+    Assignment  (Variable<'a>, Option<Union<Expression<'a>, Value<'a>>>),  // variable name and expression for resolution of the value at runtime
     None,
 }
 
@@ -45,10 +45,21 @@ pub enum Value<'a> {
     ConstFloat (f64),
     Variable (Variable<'a>),
     FuncCall (&'a str, Vec<Value<'a>>),  // function name and argument inputs
+    ConstStr (&'a str),
 }
 
 #[derive(Debug)]
-pub enum Variable<'a> {
+pub struct Variable<'a> {
+    var_type: VariableType<'a>,
+    reassignable: bool,
+    mutable: bool,
+    // these can be lifetime 'a as 'a comes from main and these parameters come from tokens which are passed from main
+    global: &'a Option<bool>,
+    lifetime: &'a tokenizer::Lifetime,
+}
+
+#[derive(Debug)]
+pub enum VariableType<'a> {
     Var       (&'a str),
     Array     (&'a str, Box<Variable<'a>>),
     Member    (&'a str, Box<Variable<'a>>),  // base reference following by member name (creates basically a linked list if multiple members are embedded)
@@ -70,7 +81,7 @@ impl<T> PtrSync<T> {
 }
 
 // generates an ast with all files embedded based on exports allowing for a natural control flow in emulation/interpretation
-pub fn generate_embedded_ast<'a, 'b>(tokens: Vec<Vec<(tokenizer::Token<'a>, &'a str, usize, usize)>>, indented: Vec<usize>) -> AstNode<'b> {
+pub fn generate_embedded_ast<'a>(tokens: Vec<Vec<(tokenizer::Token<'a>, &'a str, usize, usize)>>, indented: Vec<usize>) -> AstNode<'a> {
     let start_time = std::time::Instant::now();
     
     let root = AstNode::default();
@@ -83,11 +94,12 @@ pub fn generate_embedded_ast<'a, 'b>(tokens: Vec<Vec<(tokenizer::Token<'a>, &'a 
     for file_index in 0..file_tokens.len() {
         let file_size = file_tokens[file_index].len();
         // pushing the ownership into the files vector to ensure it lives long enough and isn't dropped after the loop
-        let file = AstNodeFileWrapper {
+        // placed in a box to doubly verify that when the vector gets reallocated it doesn't move in memory
+        let file = Box::new(AstNodeFileWrapper {
             node: AstNode::default(),
             exporting: vec![],
             file_name: "unnamed",
-        };
+        });
         files.push(file);
         // creating the super safe pointers to pass into the threads....
         let token_ptr = PtrSync::new(unsafe {
@@ -113,7 +125,7 @@ pub fn generate_embedded_ast<'a, 'b>(tokens: Vec<Vec<(tokenizer::Token<'a>, &'a 
         let file_ptr = PtrSync::new( {
             // should I convert file to a pointer? Or should I convert a usize to a pointer to AstNodeFileWrapper?
             // The usize seems reasonable, right? The memory should line up just perfectly. It's not like the former is smaller than the ladder...
-            &mut files[file_index] as *mut AstNodeFileWrapper
+            &mut *files[file_index] as *mut AstNodeFileWrapper
         });
         let handle = std::thread::spawn(move || {
             // do things here...
@@ -138,6 +150,12 @@ pub fn generate_embedded_ast<'a, 'b>(tokens: Vec<Vec<(tokenizer::Token<'a>, &'a 
         println!("Generated file: {}\n > {:?}", file.file_name, file.node);
     }
     
+    // combining the files into one root node
+    // going through each file and adding any exported function and its dependencies to the other file
+    // repeat for every file (n^2) so that they can all function
+    // prune any leftover bits not connected into main
+    // TODO!
+    
     println!("AST Generation Time: {:?}", duration);
     
     root
@@ -159,7 +177,7 @@ fn generate_scoped_ast<'a, 'b>(token_ptr: PtrSync<*mut Vec<(tokenizer::Token<'a>
         Union::Right(n) => unsafe { &mut **n }.file_name = {
             match unsafe { &*token_ptr.lock().add(0) }[0].0 {
                 tokenizer::Token::FileHeader(name) => name,
-                _ => ""
+                _ => "Unnamed--Error"
             }
         },
     }
@@ -193,7 +211,7 @@ fn generate_scoped_ast<'a, 'b>(token_ptr: PtrSync<*mut Vec<(tokenizer::Token<'a>
                 continue;
             } else {
                 // the end of whatever scope this is
-                return i;
+                return i + 1;
             }
         }
         // else: call function to generate ast node and append it
@@ -212,28 +230,49 @@ fn generate_scoped_ast<'a, 'b>(token_ptr: PtrSync<*mut Vec<(tokenizer::Token<'a>
 
 // given a single line of tokens, generate the given operation those tokens represent
 // any scope data should already be handled, so this should purely worry about the vector of tokens
-fn get_ast_line<'a, 'b>(tokens: &'a mut Vec<(tokenizer::Token<'a>, &'a str, usize, usize)>) -> AstOperation<'b>
-    where 'a: 'b  // 'a is the root scope calling this function and the tokenizer ones. 'b is the scope for the entry function that handles ast generation (1 deeper than main)
-{
+fn get_ast_line<'a>(tokens: &'a mut Vec<(tokenizer::Token<'a>, &'a str, usize, usize)>) -> AstOperation<'a> {
     match &tokens[0] {
         // How long did they say a line should be at most? It was 150% of a full 4k screen, right?
         (tokenizer::Token::Assign(is_const_1, is_const_2, optional_const, lifetime, name, expr, priority), text, start, size) => {
-            return AstOperation::Assignment(get_variable(*name), match expr {
+            AstOperation::Assignment(get_variable(*name, *is_const_1, *is_const_2, optional_const, lifetime), match expr {
                 Some(expr) => get_expression(expr),
                 None => None
-            });
+            })
         }
-        _ => {}
+        // TODO! add more operations here
+        _ => { AstOperation::None }
     }
-    AstOperation::None
 }
 
-fn get_variable(name: &str) -> Variable<'_> {
-    Variable::Var(name)
+fn get_variable<'a>(name: &'a str,
+                        reassignable: bool,
+                        mutable: bool,
+                        global: &'a Option<bool>,
+                        lifetime: &'a tokenizer::Lifetime
+) -> Variable<'a> {
+    // this will need to not be this at some point
+    // add members, arrays, and members or members of...
+    Variable { var_type: VariableType::Var(name), reassignable, mutable, global, lifetime }  // TODO!
 }
 
-fn get_expression<'b>(expr: &Vec<(tokenizer::Token<'_>, &'_ str, usize, usize)>) -> Option<Expression<'b>> {
-    None
+fn get_expression<'a>(expr: &'a Vec<(tokenizer::Token<'_>, &'_ str, usize, usize)>) -> Option<Union<Expression<'a>, Value<'a>>> {
+    // ideally, the tokenizer already simplified everything such that the type of expression is the first token; additional details may follow or be combined
+    match &expr[0].0 {
+        // checking if it's a simple constant
+        tokenizer::Token::Int(int) if expr.len() == 1 => {
+            Some(Union::Right(Value::ConstInt(*int as i64)))
+        },
+        tokenizer::Token::Float(float) if expr.len() == 1 => {
+            Some(Union::Right(Value::ConstFloat(*float)))
+        },
+        tokenizer::Token::String(string) if expr.len() == 1 => {
+            Some(Union::Right(Value::ConstStr(*string)))
+        },
+        // todo! if await is used, wrap that expression all in the await signifying that:
+        //    * instead of looking into the future, store the call and conclude it later once finalized
+        //    * such as when doing ```await next variable + 6``` where, the next value of variable is waited for until the expression and subsequently line is completed
+        _ => None  // TODO! add more expression types (such as actual expressions and not just constants)
+    }
 }
 
 fn break_into_files<'a>(mut tokens: Vec<Vec<(tokenizer::Token<'a>, &'a str, usize, usize)>>,

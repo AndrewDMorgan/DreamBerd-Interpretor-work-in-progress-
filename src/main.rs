@@ -1,5 +1,6 @@
 mod tokenizer;
 mod ast;
+mod rpp_vm;
 
 use crate::ast::generate_embedded_ast;
 use crate::tokenizer::{is_function_ident, tokenize};
@@ -49,6 +50,7 @@ fn main() {
     let text = text.lines().collect();
     let (tokens, indents) = tokenize(text);
     let node = generate_embedded_ast(tokens, indents);
+    rpp_vm::run(node);
     
     //
 }
