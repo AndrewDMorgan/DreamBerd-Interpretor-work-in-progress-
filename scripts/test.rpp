@@ -14,11 +14,13 @@ const var ️❤️ = 456!!
 ======= hello
 ======= exported.exporting
 
-import testing as test from hello.world
+import testing as test from hello.world!!!!
 export test to main.rpp
 
 ======= main.rpp =======
 import test from exported.exporting
+
+const const const world = hello world!!!!
 
 print("${next t}"
 const var t = 32!!  // testing 1..2 function return

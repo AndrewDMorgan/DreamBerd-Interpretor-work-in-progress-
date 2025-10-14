@@ -6,7 +6,7 @@ pub enum Token<'a> {
     Function (&'a str, Vec<&'a str>),   // identified function names
     Compare  (CompareOp, usize),     // the level of comparison (0 for = (just type check), 1 for == (type and whole number)), 2 for === (decimal), 3 for ==== (exact) )
     File     (),          // file identifier (no name as combining happens with the ast generation)
-    Export   (),
+    Export   (&'a str, &'a str),  // function name, file name
     Reverse  (),
     Lifetime (Lifetime),  // a lifetime specifier
     Previous (),
@@ -20,14 +20,18 @@ pub enum Token<'a> {
     FileHeader (&'a str), // the name of the file
     Return   (),
     Delete   (),
-    When     (),
+    When     (Vec<(Token<'a>, &'a str, usize, usize)>),  // the expression tokens for mutation pattern
     Await    (),
     Async    (),
     Comma    (),
     To       (),
     As       (),
     From     (),
-    Import   (),
+    If       (Vec<(Token<'a>, &'a str, usize, usize)>),  // the expression tokens
+    Else     (),
+    Debug    (),
+    Elif     (Vec<(Token<'a>, &'a str, usize, usize)>),  // the expression tokens
+    Import   (&'a str, Option<&'a str>, &'a str),  // function name, optional alias, file name
     Assign   (bool, bool, Option<bool>, Lifetime, &'a str, Option<Vec<(Token<'a>, &'a str, usize, usize)>>, isize),  // is const, is const, is const, name, right side
 }
 
@@ -284,6 +288,53 @@ fn combine_tokens<'a>(tokens: &mut Vec<(Token<'a>, &'a str, usize, usize)>) {
                 _ => {}
             }
         }
+        if matches!(tokens[index], (Token::Export(..),..)) && index + 5 < tokens.len() {
+            // export function_name to file.name
+            let new_tokens = tokens.split_off(index + 1);
+            let function_name = &new_tokens[0].1[new_tokens[0].2..new_tokens[0].2 + new_tokens[0].3];
+            let file_name = &new_tokens[0].1[new_tokens[2].2..new_tokens[4].2 + new_tokens[4].3];
+            match &mut tokens[index].0 {
+                Token::Export(function, file) => {
+                    *function = function_name;
+                    *file = file_name;
+                },
+                _ => {}
+            }
+        }
+        if matches!(tokens[index], (Token::Import(..),..)) {
+            match tokens.len() {
+                6 | 7 => {
+                    // import function_name from file.name
+                    let new_tokens = tokens.split_off(index + 1);
+                    let function_name = &new_tokens[0].1[new_tokens[0].2..new_tokens[0].2 + new_tokens[0].3];
+                    let file_name = &new_tokens[index].1[new_tokens[2].2..new_tokens[4].2 + new_tokens[4].3];
+                    match &mut tokens[index].0 {
+                        Token::Import(function, alias, file) => {
+                            *function = function_name;
+                            *file = file_name;
+                            *alias = None;
+                        },
+                        _ => {}
+                    }
+                },
+                8 | 9 => {
+                    // import function_name as new_function_name from file.name
+                    let new_tokens = tokens.split_off(index + 1);
+                    let function_name = &new_tokens[0].1[new_tokens[0].2..new_tokens[0].2 + new_tokens[0].3];
+                    let new_function_name = &new_tokens[2].1[new_tokens[2].2..new_tokens[2].2 + new_tokens[2].3];
+                    let file_name = &new_tokens[0].1[new_tokens[4].2..new_tokens[6].2 + new_tokens[6].3];
+                    match &mut tokens[index].0 {
+                        Token::Import(function, alias, file) => {
+                            *function = function_name;
+                            *file = file_name;
+                            *alias = Some(new_function_name);
+                        },
+                        _ => {}
+                    }
+                },
+                _ => {},
+            }
+        }
         index += 1;
     }
     
@@ -348,6 +399,33 @@ fn combine_tokens<'a>(tokens: &mut Vec<(Token<'a>, &'a str, usize, usize)>) {
                 _ => {}
             }
         }
+        else if index == 0 && matches!(tokens[index].0, Token::If(..)) {
+            let expression_tokens = tokens.split_off(index + 1);
+            match &mut tokens[index].0 {
+                Token::If(expr) => {
+                    *expr = expression_tokens;  // this may need pruning/cleaning up? todo! figure that out
+                },
+                _ => {}
+            }
+        }
+        else if index == 0 && matches!(tokens[index].0, Token::Elif(..)) {
+            let expression_tokens = tokens.split_off(index + 1);
+            match &mut tokens[index].0 {
+                Token::Elif(expr) => {
+                    *expr = expression_tokens;  // this may need pruning/cleaning up? todo! figure that out
+                },
+                _ => {}
+            }
+        }
+        else if index == 0 && matches!(tokens[index].0, Token::When(..)) {
+            let expression_tokens = tokens.split_off(index + 1);
+            match &mut tokens[index].0 {
+                Token::When(expr) => {
+                    *expr = expression_tokens;  // this may need pruning/cleaning up? todo! figure that out
+                },
+                _ => {}
+            }
+        }
         
         index += 1;
     }
@@ -374,7 +452,7 @@ fn get_indent_direction(indent_direction: &mut isize, output: &Box<Vec<Vec<&str>
             if *indent_direction == 0 {
                 // checking if there's a syntax indicating an indent (if not, then an indent means negative, otherwise positive)
                 let is_indented = is_function_ident(line[0], line) ||
-                    ["class", "when", "if", "{"].contains(&line[0]);
+                    ["class", "when", "if", "elif", "else", "{"].contains(&line[0]);
                 if is_indented {
                     *indent_direction = 1;
                     println!("Normal");
@@ -521,8 +599,8 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
                 *indentation = 0;  // new file, new indentation
                 Token::File()
             },
-            "export" => { Token::Export() },
-            "import" => { Token::Import() },
+            "export" => { Token::Export("", "") },
+            "import" => { Token::Import("", None, "") },
             "from" => { Token::From() },
             "to" => { Token::To() },
             "as" => { Token::As() },
@@ -531,30 +609,38 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
             "next" => { Token::Next() },
             "return" => { Token::Return() },
             
-            "when" => { Token::When() },
+            "when" => { Token::When(vec![]) },
             "await" => { Token::Await() },
             "async" => { Token::Async() },
             "," => { Token::Comma() },
+            
+            "if" => { Token::If(vec![]) },
+            "elif" => { Token::Elif(vec![]) },
+            "else" => { Token::Else() },
+            
+            "?" => { Token::Debug() }
             
             // Are there enough nested if else's? No, never
             t if t.parse::<isize>().is_ok() || t[0..next_valid_index(t.len()-1, t)].parse::<isize>().is_ok() => {
                 if t.ends_with("s") {
                     Token::Lifetime(Lifetime::Seconds(
-                        t[0..t.len()-1].parse::<isize>().unwrap()
+                        unsafe { t[0..t.len()-1].parse::<isize>().unwrap_unchecked() }
                     ))
                 } else if (line[index.saturating_sub(1)] == "<" ||
                             (!tokens.is_empty() && matches!(tokens[tokens.len() - 1].0, Token::Math(MathOp::Subtract,..)))) &&
                            line.get(index + 1) == Some(&">")
                 {
                     Token::Lifetime(Lifetime::Lines(
-                        t.parse::<isize>().unwrap()
+                        unsafe { t.parse::<isize>().unwrap_unchecked() }
                     ))
                 } else {
-                    Token::Int(t.parse::<isize>().unwrap())
+                    unsafe { Token::Int(t.parse::<isize>().unwrap_unchecked()) }
                 }
             },
             t if t.parse::<f64>().is_ok() => {
-                Token::Float(t.parse::<f64>().unwrap())
+                // need to sprinkle in some unsafety to ensure things would flow smoothly
+                // you can always be too safe
+                unsafe { Token::Float(t.parse::<f64>().unwrap_unchecked()) }
             },
             
             // you might be asking where '{' and '}' are.... well it's based on white space like python so they aren't needed even though it's part of the language (makes sense, right?)
@@ -704,7 +790,7 @@ static BLANK_CHARS: &[&str] = &[
 ];
 
 static BREAKS: &[&str] = &[
-    " ", "\n", "\t", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "-", "_", "=", "+",
+    " ", "\n", "\t", "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "-", "=", "+",
     "[", "]", "{", "}", ";", ":", "'", "\"", ",", "<", ".", ">", "/", "?", "\\", "|",
     "==", "===", "====", "=====", "======", "=======", "+=", "-=", "*=", "/=", "%=", "&&", "||", "++", "--",
     ">", ">>", ">>>", ">>>>", ">=", ">>=", ">>>=", ">>>>=",

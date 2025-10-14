@@ -1,13 +1,13 @@
 use crate::tokenizer;
 
 // I could have default implemented.... or I could resort to null pointers..... hmmmm..... Jk, I'm not a masochist
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, PartialEq)]
 pub struct AstNode<'a> {
     children_scopes: Vec<AstNode<'a>>,
-    operations: Vec<AstOperation<'a>>,
+    operations: Vec<(AstOperation<'a>, Option<bool>)>,  // the option bool is for if the line is a debug line
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AstOperation<'a> {
     ScopeChange (usize),  // the local index to the new scope for the node
     Expr        (Expression<'a>),  // a mathematical expression
@@ -17,19 +17,19 @@ pub enum AstOperation<'a> {
 
 // Made this before realizing there's a super unsafe implementation in the standard library
 // Sorry, I mean *perfectly safe
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Union<L, R> {
     Left  (L),
     Right (R),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Expression<'a> {
     left_op: Union<ExpressionOp<'a>, Value<'a>>,
     right_op: Union<ExpressionOp<'a>, Value<'a>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExpressionOp<'a> {
     Add (Value<'a>, Value<'a>),
     Sub (Value<'a>, Value<'a>),
@@ -39,7 +39,7 @@ pub enum ExpressionOp<'a> {
     Mod (Value<'a>, Value<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
     ConstInt (i64),
     ConstFloat (f64),
@@ -48,7 +48,7 @@ pub enum Value<'a> {
     ConstStr (&'a str),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Variable<'a> {
     var_type: VariableType<'a>,
     reassignable: bool,
@@ -56,9 +56,10 @@ pub struct Variable<'a> {
     // these can be lifetime 'a as 'a comes from main and these parameters come from tokens which are passed from main
     global: &'a Option<bool>,
     lifetime: &'a tokenizer::Lifetime,
+    priority: isize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VariableType<'a> {
     Var       (&'a str),
     Array     (&'a str, Box<Variable<'a>>),
@@ -67,7 +68,8 @@ pub enum VariableType<'a> {
 
 struct AstNodeFileWrapper<'a, 'b> {
     pub node: AstNode<'b>,
-    pub exporting: Vec<Vec<usize>>,  // the indexes of the scopes in order to get to the exported function
+    pub exporting: Vec<(Vec<usize>, &'a str)>,  // the indexes of the scopes in order to get to the exported function
+    pub importing: Vec<(&'a str, &'a str)>,  // function name, file name
     pub file_name: &'a str,
 }
 
@@ -99,6 +101,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<Vec<(tokenizer::Token<'a>, &'a str,
             node: AstNode::default(),
             exporting: vec![],
             file_name: "unnamed",
+            importing: vec![],
         });
         files.push(file);
         // creating the super safe pointers to pass into the threads....
@@ -230,17 +233,20 @@ fn generate_scoped_ast<'a, 'b>(token_ptr: PtrSync<*mut Vec<(tokenizer::Token<'a>
 
 // given a single line of tokens, generate the given operation those tokens represent
 // any scope data should already be handled, so this should purely worry about the vector of tokens
-fn get_ast_line<'a>(tokens: &'a mut Vec<(tokenizer::Token<'a>, &'a str, usize, usize)>) -> AstOperation<'a> {
+fn get_ast_line<'a>(tokens: &'a mut Vec<(tokenizer::Token<'a>, &'a str, usize, usize)>) -> (AstOperation<'a>, Option<bool>) {
+    let debug = tokens.iter().any(|(token,..)| {
+        *token == tokenizer::Token::Debug()
+    });
     match &tokens[0] {
         // How long did they say a line should be at most? It was 150% of a full 4k screen, right?
         (tokenizer::Token::Assign(is_const_1, is_const_2, optional_const, lifetime, name, expr, priority), text, start, size) => {
-            AstOperation::Assignment(get_variable(*name, *is_const_1, *is_const_2, optional_const, lifetime), match expr {
+            (AstOperation::Assignment(get_variable(*name, *is_const_1, *is_const_2, optional_const, lifetime, *priority), match expr {
                 Some(expr) => get_expression(expr),
                 None => None
-            })
+            }), Some(debug))
         }
         // TODO! add more operations here
-        _ => { AstOperation::None }
+        _ => { (AstOperation::None, Some(debug)) }
     }
 }
 
@@ -248,11 +254,12 @@ fn get_variable<'a>(name: &'a str,
                         reassignable: bool,
                         mutable: bool,
                         global: &'a Option<bool>,
-                        lifetime: &'a tokenizer::Lifetime
+                        lifetime: &'a tokenizer::Lifetime,
+                        priority: isize,
 ) -> Variable<'a> {
     // this will need to not be this at some point
     // add members, arrays, and members or members of...
-    Variable { var_type: VariableType::Var(name), reassignable, mutable, global, lifetime }  // TODO!
+    Variable { var_type: VariableType::Var(name), reassignable, mutable, global, lifetime, priority }  // TODO!
 }
 
 fn get_expression<'a>(expr: &'a Vec<(tokenizer::Token<'_>, &'_ str, usize, usize)>) -> Option<Union<Expression<'a>, Value<'a>>> {
@@ -271,7 +278,13 @@ fn get_expression<'a>(expr: &'a Vec<(tokenizer::Token<'_>, &'_ str, usize, usize
         // todo! if await is used, wrap that expression all in the await signifying that:
         //    * instead of looking into the future, store the call and conclude it later once finalized
         //    * such as when doing ```await next variable + 6``` where, the next value of variable is waited for until the expression and subsequently line is completed
-        _ => None  // TODO! add more expression types (such as actual expressions and not just constants)
+        // TODO! add more expression types (such as actual expressions and not just constants)
+        exp => {
+            // assuming it's a string
+            Some(Union::Right(Value::ConstStr(
+                &expr[0].1[expr[0].2..]
+            )))
+        }
     }
 }
 
