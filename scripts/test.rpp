@@ -40,9 +40,12 @@ fnc pet g
       why
          testing
    but_noooo
+   function other_test_script g p t
+      return 4!!
 
 noop!
 
 fncion pello (hello, world) {  // testing 1..2 function return
    return hello+world * 2
+
 

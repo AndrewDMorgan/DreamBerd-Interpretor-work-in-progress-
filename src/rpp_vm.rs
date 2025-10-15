@@ -1,4 +1,4 @@
-use crate::ast::{AstNode, AstOperation, Union};
+use crate::ast::{AstNode, AstNodeFileWrapper, AstOperation, Union};
 use std::collections::HashMap;
 
 static mut DEBUG: bool = false;
@@ -24,16 +24,53 @@ struct RuntimeError {
     error_type: RuntimeErrorType,
 }
 
-pub fn run(node: AstNode) {
-    println!("\n\n\n\n\n Running the VM!!! \n\n\n\n\n");
+fn search_for_functions<'a>(
+    functions: &'_ mut HashMap<&'a str, (Vec<usize>, &'a str)>,
+    node: &AstNode<'a>,
+    mut scope: Vec<usize>
+) {
+    // continuing the depth
+    for (i, child_node) in node.children_scopes.iter().enumerate() {
+        search_for_functions(functions, child_node, {
+            let mut scope = scope.clone();
+            scope.push(i);
+            scope
+        })
+    }
+    
+    // searching through the current operations
+    for (_i, (operation, _debug)) in node.operations.iter().enumerate() {
+        // searching for a function
+        match operation {
+            AstOperation::Function(name, index, parameters) => {
+                println!("\nName: {}\nindex: {:?}\nparams: {:?}\n", name, index, parameters);
+            },
+            _ => {}
+        }
+    }
+}
+
+fn generate_functions<'a>(node: &'_ Vec<AstNodeFileWrapper<'a>>) -> HashMap<&'a str, (Vec<usize>, &'a str)> {
+    let mut functions = HashMap::new();
+    // gathering all functions and correct providing paths to make look-ups far easier and more efficent
+    for (file_index, file) in node.iter().enumerate() {
+        search_for_functions(&mut functions, &file.node, vec![file_index])
+    }
+    functions
+}
+
+pub fn run(node: Vec<AstNodeFileWrapper>) {
+    println!("\n\n\n\n\n Running the VM!!! \n\n\n\n\nReceived: {:?}\n\n\n\n\n", node);
     
     // actually run the vm..... (sounds like a lot of work)
+    let functions = generate_functions(&node);
     let mut env = VmEnvironment {
         variables: HashMap::new(),
         line_index: vec![(0, 0)],
-        node: &node,
+        node,
         removed_constructs: vec![],
         line_iteration: 0,
+        function_idents: functions,
     };
     
     // running the vm ig (any state cloning can happen internally?)
@@ -57,11 +94,13 @@ struct VmEnvironment<'a> {
     // a path to the current scope in the ast, along with the actual operation line index for each corresponding scope
     line_index: Vec<(usize, usize)>,
     
-    node: &'a AstNode<'a>,
+    node: Vec<AstNodeFileWrapper<'a>>,
     
     removed_constructs: Vec<Union<Value<'a>, AstOperation<'a>>>,
     
     line_iteration: usize,
+    
+    function_idents: HashMap<&'a str, (Vec<usize>, &'a str)>,
 }
 
 impl<'a> VmEnvironment<'a> {
@@ -269,7 +308,14 @@ fn get_random_future_error_text() -> &'static str {
     // super random and quality, ik, ik
     // seems random-ish enough
     let now = std::time::Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(1));
+    // plenty of randomizing (sleep calls and time calls require system api calls that can taken hundreds of
+    //     ns so this should add up quickly to some nice error utilizing the timing errors built into the
+    //     Mac-Os operating system)
+    std::thread::sleep(std::time::Duration::from_micros(2));  // this should randomize it plenty more!
+    std::thread::sleep(std::time::Duration::from_micros(2));  // this should randomize it plenty more!
+    std::thread::sleep(std::time::Duration::from_micros(2));  // this should randomize it plenty more!
+    std::thread::sleep(std::time::Duration::from_micros(2));  // this should randomize it plenty more!
+    std::thread::sleep(std::time::Duration::from_micros(2));  // this should randomize it plenty more!
     let index = now.elapsed().as_nanos() % examples.len() as u128;
     examples[index as usize]
 }

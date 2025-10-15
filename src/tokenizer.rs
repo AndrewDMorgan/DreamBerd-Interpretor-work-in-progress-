@@ -117,7 +117,8 @@ fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<Vec<(Token<'_>, &
     }
     // is this remotely even? no. But nor is whoever was in office yesterday relative to today (2025 snl. if u know u know)
     if output.len() >= (NUM_THREADS-1)*avg_count || true {
-        slices_index.push(((NUM_THREADS-1)*avg_count, output.len() % NUM_THREADS + 1));
+        let position = slices_index[slices_index.len() - 1].0 + slices_index[slices_index.len() - 1].1;
+        slices_index.push((position, output.len() - position));
     }
     
     // getting the indent direction
