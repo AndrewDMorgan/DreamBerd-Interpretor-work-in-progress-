@@ -30,6 +30,8 @@ pub enum Token<'a> {
     If       (Vec<(Token<'a>, &'a str, usize, usize)>),  // the expression tokens
     Else     (),
     Debug    (),
+    SingleQ  (),
+    DoubleQ  (),
     Elif     (Vec<(Token<'a>, &'a str, usize, usize)>),  // the expression tokens
     Import   (&'a str, Option<&'a str>, &'a str),  // function name, optional alias, file name
     Assign   (bool, bool, Option<bool>, Lifetime, &'a str, Option<Vec<(Token<'a>, &'a str, usize, usize)>>, isize),  // is const, is const, is const, name, right side
@@ -76,7 +78,7 @@ pub enum Lifetime {
     Lines(isize),
 }
 
-pub fn tokenize(text: Vec<&'_ str>) -> (Vec<Vec<(Token<'_>, &'_ str, usize, usize)>>, Vec<usize>) {
+pub fn tokenize(text: Vec<&'_ str>) -> (Vec<(Vec<(Token<'_>, &'_ str, usize, usize)>, usize)>, Vec<usize>) {
     let start = std::time::Instant::now();
     let (text, tokens, indentation) = break_tokens(text);
     let el = start.elapsed();
@@ -96,14 +98,14 @@ impl<T> PtrSync<T> {
 
 static NUM_THREADS: usize = 8;  // more threads is always better, right? What could go wrong
 
-fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<Vec<(Token<'_>, &'_ str, usize, usize)>>, Vec<usize>) {
+fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<(Vec<(Token<'_>, &'_ str, usize, usize)>, usize)>, Vec<usize>) {
     // why am I using a box? Idk, hopefully it'll ensure the memory address holds up better (it doesn't, this is called denial about bad code)
     let mut indentation = Box::new(vec![]);
     let mut output = Box::new(vec![]);
-    let mut tokens = Box::new(vec![]);
-    for line in text {
-        output.push(vec![line]);
-        tokens.push(vec![]);  // woops..... kinda need to actually allocate the array and not just index into it
+    let mut tokens: Box<Vec<(Vec<(Token, &str, usize, usize)>, usize)>> = Box::new(vec![]);
+    for (index, line) in text.iter().enumerate() {
+        output.push(vec![*line]);
+        tokens.push((vec![], index));  // woops..... kinda need to actually allocate the array and not just index into it
         indentation.push(0);
     }
     
@@ -141,7 +143,7 @@ fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<Vec<(Token<'_>, &
             // what a great idea
             // non-static static data... just the way it was intended
             // anyway, rust-analyzer was working way to well before, and now it keeps crashing!
-            std::mem::transmute::<&mut Box<Vec<Vec<(Token, &str, usize, usize)>>>, &'static mut Box<Vec<Vec<(Token, &str, usize, usize)>>>>(&mut tokens).as_mut_ptr()
+            std::mem::transmute::<&mut Box<Vec<(Vec<(Token, &str, usize, usize)>, usize)>>, &'static mut Box<Vec<(Vec<(Token, &str, usize, usize)>, usize)>>>(&mut tokens).as_mut_ptr()
         });
         let indent_ptr = PtrSync::new(unsafe {
             // what a great idea
@@ -164,8 +166,8 @@ fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<Vec<(Token<'_>, &
                 let indentation = unsafe {&mut *(&mut indent_ptr.lock()).add(slice_index.0 + i) };
                 let whole = &line[0][..];
                 split_line(line);
-                into_tokens(line, whole, tokens, indentation, indent_direction);
-                combine_tokens(tokens);
+                into_tokens(line, whole, &mut tokens.0, indentation, indent_direction);
+                combine_tokens(&mut tokens.0);
         } })); }
     for handle in handles {
         match handle.join() {
@@ -618,6 +620,9 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
             "if" => { Token::If(vec![]) },
             "elif" => { Token::Elif(vec![]) },
             "else" => { Token::Else() },
+            
+            "\"" => { Token::SingleQ() },
+            "'" => { Token::DoubleQ() },
             
             "?" => { Token::Debug() }
             

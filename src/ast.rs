@@ -5,6 +5,34 @@ use crate::tokenizer::{self, Token};
 pub struct AstNode<'a> {
     pub children_scopes: Vec<AstNode<'a>>,
     pub operations: Vec<(AstOperation<'a>, Option<bool>)>,  // the option bool is for if the line is a debug line
+    pub base_line_index: usize,
+    pub name: &'a str,
+}
+
+impl<'a> AstNode<'a> {
+    pub fn get_child(&self, index: usize) -> Option<&AstNode<'a>> {
+        self.children_scopes.get(index)
+    }
+    
+    pub fn get_child_mut(&mut self, index: usize) -> Option<&mut AstNode<'a>> {
+        self.children_scopes.get_mut(index)
+    }
+    
+    pub fn get_child_recursive(&self, index: &[usize]) -> Option<&AstNode<'a>> {
+        if index.is_empty() { return Some(self); }
+        match self.children_scopes.get(index.len()) {
+            Some(child) => child.get_child_recursive(&index[1..]),
+            None => None
+        }
+    }
+    
+    pub fn get_child_recursive_mut(&mut self, index: &[usize]) -> Option<&mut AstNode<'a>> {
+        if index.is_empty() { return Some(self); }
+        match self.children_scopes.get_mut(index.len()) {
+            Some(child) => child.get_child_recursive_mut(&index[1..]),
+            None => None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,7 +41,10 @@ pub enum AstOperation<'a> {
     Expr        (Expression<'a>),  // a mathematical expression
     Assignment  (Variable<'a>, Option<Union<Expression<'a>, Value<'a>>>),  // variable name and expression for resolution of the value at runtime
     None,
-    Function    (&'a str, Vec<usize>, Vec<&'a str>)  // name, index, parameters
+    Function    (&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
+    FunctionCall (&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
+    Closure     (AstNode<'a>),  // the closure node (will require at least opening brackets to identify) todo! add closures
+    Return      (Option<Union<Expression<'a>, Value<'a>>>),
 }
 
 // Made this before realizing there's a super unsafe implementation in the standard library
@@ -26,18 +57,19 @@ pub enum Union<L, R> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression<'a> {
-    left_op: Union<ExpressionOp<'a>, Value<'a>>,
-    right_op: Union<ExpressionOp<'a>, Value<'a>>,
+    left_op: Union<Box<Expression<'a>>, Value<'a>>,
+    operator: Box<Expression<'a>>,
+    right_op: Union<Box<Expression<'a>>, Value<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ExpressionOp<'a> {
-    Add (Value<'a>, Value<'a>),
-    Sub (Value<'a>, Value<'a>),
-    Mul (Value<'a>, Value<'a>),
-    Div (Value<'a>, Value<'a>),
-    Pow (Value<'a>, Value<'a>),
-    Mod (Value<'a>, Value<'a>),
+pub enum ExpressionOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Mod,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,7 +77,7 @@ pub enum Value<'a> {
     ConstInt (i64),
     ConstFloat (f64),
     Variable (Variable<'a>),
-    FuncCall (&'a str, Vec<Value<'a>>),  // function name and argument inputs
+    FuncCall (&'a str, Vec<usize>, Vec<Value<'a>>),  // function name, index, and argument inputs
     ConstStr (&'a str),
 }
 
@@ -85,7 +117,7 @@ impl<T> PtrSync<T> {
 }
 
 // generates an ast with all files embedded based on exports allowing for a natural control flow in emulation/interpretation
-pub fn generate_embedded_ast<'a>(tokens: Vec<Vec<(Token<'a>, &'a str, usize, usize)>>, indented: Vec<usize>) -> Vec<AstNodeFileWrapper<'a>> {
+pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, usize)>, usize)>, indented: Vec<usize>) -> Vec<AstNodeFileWrapper<'a>> {
     let start_time = std::time::Instant::now();
     
     let (mut file_tokens, mut file_indents) = break_into_files(tokens, indented);
@@ -98,12 +130,14 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<Vec<(Token<'a>, &'a str, usize, usi
         let file_size = file_tokens[file_index].len();
         // pushing the ownership into the files vector to ensure it lives long enough and isn't dropped after the loop
         // placed in a box to doubly verify that when the vector gets reallocated it doesn't move in memory
-        let file = Box::new(AstNodeFileWrapper {
+        let mut file = Box::new(AstNodeFileWrapper {
             node: AstNode::default(),
             exporting: vec![],
             file_name: "unnamed",
             importing: vec![],
         });
+        file.node.base_line_index = file_tokens[file_index][0].1;
+        file.node.name = "file root name";
         files.push(file);
         // creating the super safe pointers to pass into the threads....
         let token_ptr = PtrSync::new(unsafe {
@@ -113,7 +147,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<Vec<(Token<'a>, &'a str, usize, usi
             
             // when in doubt, or when the compiler keeps complaining, just make it static!
             // why can't we just call all data static? Just Dreamberd it and treat all lifetimes as infinity, what could ever go wrong?
-            std::mem::transmute::<&mut Vec<Vec<(Token, &str, usize, usize)>>, &'static mut Vec<Vec<(Token, &str, usize, usize)>>>(&mut file_tokens[file_index]).as_mut_ptr()
+            std::mem::transmute::<&mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>, &'static mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>>(&mut file_tokens[file_index]).as_mut_ptr()
         });
         let indent_ptr = PtrSync::new(unsafe {
             // what a great idea
@@ -165,10 +199,10 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<Vec<(Token<'a>, &'a str, usize, usi
 
 fn handle_imports_and_exports<'a>(
     file: &mut AstNodeFileWrapper<'a>,
-    token_ptr: &'_ *mut Vec<(Token<'a>, &'a str, usize, usize)>, file_size: usize)
+    token_ptr: &'_ *mut (Vec<(Token<'a>, &'a str, usize, usize)>, usize), file_size: usize)
 {
     for i in 0..file_size {
-        match &unsafe { &*token_ptr.add(i) }[0] {
+        match &unsafe { &(*token_ptr.add(i)).0 }[0] {
             (Token::Import(name, optional_alias, file_add), _text, _start, _size) => {
                 file.importing.push((*name, *optional_alias, *file_add));
             },
@@ -181,7 +215,7 @@ fn handle_imports_and_exports<'a>(
     }
 }
 
-fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut Vec<(Token<'a>, &'a str, usize, usize)>>,
+fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
                            indent_ptr: PtrSync<*mut usize>,
                            mut node_ptr: &'_ mut Union<AstNode<'a>, *mut AstNodeFileWrapper<'a>>,
                            mut i: usize,
@@ -201,7 +235,7 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut Vec<(Token<'a>, &'a str, usiz
     match node_ptr {
         Union::Left(_) => {},
         Union::Right(n) => unsafe { &mut **n }.file_name = {
-            match unsafe { &*token_ptr.lock().add(0) }[0].0 {
+            match unsafe { &(*token_ptr.lock().add(0)).0 }[0].0 {
                 Token::FileHeader(name) => name,
                 _ => "Unnamed--Error"
             }
@@ -223,7 +257,9 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut Vec<(Token<'a>, &'a str, usiz
         if i + 1 < file_size && current_indent != unsafe { *indent_ptr.lock().add(i + 1) } {
             if current_indent < unsafe { *indent_ptr.lock().add(i + 1) } {
                 // create a new scope, calling this function recursively with that index, and waiting for a return
-                let scoped_node = AstNode::default();
+                let mut scoped_node = AstNode::default();
+                scoped_node.base_line_index = tokens.1;
+                scoped_node.name = "name goes here";  // todo!
                 let mut union = Union::Left(scoped_node);
                 i = generate_scoped_ast(token_ptr, indent_ptr, &mut union, i, file_size, {
                     let mut index = index.clone();
@@ -250,7 +286,7 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut Vec<(Token<'a>, &'a str, usiz
         }
         // else: call function to generate ast node and append it
         else {
-            let ast_line_node = get_ast_line(tokens, &index, i - start_index);
+            let ast_line_node = get_ast_line(&mut tokens.0, &index, i - start_index);
             match &mut node_ptr {
                 Union::Left(n) => n.operations.push(ast_line_node),
                 Union::Right(n) => unsafe {
@@ -313,11 +349,39 @@ fn get_expression<'a>(expr: &'a Vec<(Token<'_>, &'_ str, usize, usize)>) -> Opti
         Token::String(string) if expr.len() == 1 => {
             Some(Union::Right(Value::ConstStr(*string)))
         },
+        Token::SingleQ() | Token::DoubleQ() => {
+            let mut text = &expr[0].1[expr[0].2..];
+            // searching for the starting size
+            let mut num_quotes = 0;
+            for c in text.chars() {
+                match c {
+                    '\'' => num_quotes += 1,
+                    '"' => num_quotes += 2,
+                    _ => break,
+                }
+                text = &text[1..];
+            }
+            while text.ends_with('!') {
+                // removing the priority markings
+                text = &text[..text.len() - 1];
+            }
+            // removing as many from the end as possible
+            while num_quotes > 0 {
+                if text.ends_with('\'') {
+                    text = &text[..text.len() - 1];
+                    num_quotes -= 1;
+                } else if text.ends_with('"') {
+                    text = &text[..text.len() - 1];
+                    num_quotes -= 2;
+                } else { break; }
+            }
+            Some(Union::Right(Value::ConstStr(text)))
+        }
         // todo! if await is used, wrap that expression all in the await signifying that:
         //    * instead of looking into the future, store the call and conclude it later once finalized
         //    * such as when doing ```await next variable + 6``` where, the next value of variable is waited for until the expression and subsequently line is completed
         // TODO! add more expression types (such as actual expressions and not just constants)
-        exp => {
+        _exp => {
             // assuming it's a string
             Some(Union::Right(Value::ConstStr(
                 &expr[0].1[expr[0].2..]
@@ -326,9 +390,9 @@ fn get_expression<'a>(expr: &'a Vec<(Token<'_>, &'_ str, usize, usize)>) -> Opti
     }
 }
 
-fn break_into_files<'a>(mut tokens: Vec<Vec<(Token<'a>, &'a str, usize, usize)>>,
+fn break_into_files<'a>(mut tokens: Vec<(Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
                         mut indented: Vec<usize>
-) -> (Vec<Vec<Vec<(Token<'a>, &'a str, usize, usize)>>>, Vec<Vec<usize>>) {
+) -> (Vec<Vec<(Vec<(Token<'a>, &'a str, usize, usize)>, usize)>>, Vec<Vec<usize>>) {
     let mut broken_tokens = vec![];
     let mut broken_indents = vec![];
     
@@ -337,7 +401,7 @@ fn break_into_files<'a>(mut tokens: Vec<Vec<(Token<'a>, &'a str, usize, usize)>>
     while !tokens.is_empty() {
         let token = tokens.remove(0);
         let indent = indented.remove(0);
-        if !token.is_empty() && matches!(token[0].0, Token::FileHeader(..)) {
+        if !token.0.is_empty() && matches!(token.0[0].0, Token::FileHeader(..)) {
             if !current_indents.is_empty() {
                 broken_indents.push(current_indents);
                 broken_tokens.push(current_tokens);
@@ -345,7 +409,7 @@ fn break_into_files<'a>(mut tokens: Vec<Vec<(Token<'a>, &'a str, usize, usize)>>
             current_tokens = vec![];
             current_indents = vec![];
         }
-        if token.is_empty() { continue; }  // clearing blank spaces
+        if token.0.is_empty() { continue; }  // clearing blank spaces
         current_indents.push(indent);
         current_tokens.push(token);
     }

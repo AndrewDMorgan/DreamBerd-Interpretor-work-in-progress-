@@ -22,6 +22,7 @@ struct RuntimeError {
     message: String,
     location_name: String,
     error_type: RuntimeErrorType,
+    stack_trace: Vec<String>,
 }
 
 fn search_for_functions<'a>(
@@ -66,7 +67,8 @@ pub fn run(node: Vec<AstNodeFileWrapper>) {
     let functions = generate_functions(&node);
     let mut env = VmEnvironment {
         variables: HashMap::new(),
-        line_index: vec![(0, 0)],
+        line_index: vec![0, 0],
+        stack_calls: vec![],
         node,
         removed_constructs: vec![],
         line_iteration: 0,
@@ -80,7 +82,7 @@ pub fn run(node: Vec<AstNodeFileWrapper>) {
         },
         Err(e) => {
             // in the vm, any future propagated checks will instead return null rather than crashing allowing better future resolution without constant crashes from time traveling paradoxes
-            println!("Exited with Error Status: {:?} at {} -- {}", e.error_type, e.location_name, e.message);
+            println!("Exited with Error Status: {:?} at {} -- {}\nStack Trace:\n{}", e.error_type, e.location_name, e.message, e.stack_trace.join("\n"));
         }
     }
 }
@@ -92,7 +94,8 @@ struct VmEnvironment<'a> {
     variables: HashMap<&'a str, Vec<(Value<'a>, Lifetime, Mutability, isize)>>,
     
     // a path to the current scope in the ast, along with the actual operation line index for each corresponding scope
-    line_index: Vec<(usize, usize)>,
+    line_index: Vec<usize>,
+    stack_calls: Vec<(&'a str, usize)>,  // the stack can be used to resort the correct index when jumping between files
     
     node: Vec<AstNodeFileWrapper<'a>>,
     
@@ -105,15 +108,97 @@ struct VmEnvironment<'a> {
 
 impl<'a> VmEnvironment<'a> {
     // runs until a value is found
-    fn run_and_search(&self, reference: &'a str) -> Result<(Value<'a>, Lifetime), RuntimeError> {
+    fn run_and_search(&mut self, reference: &'a str) -> Result<(Value<'a>, Lifetime), RuntimeError> {
         self.run_vm(Some(reference))
     }
     
-    fn run_vm(&self, reference: Option<&str>) -> Result<(Value<'a>, Lifetime), RuntimeError> {
+    fn search_for_raw_node<'b>(node: &'b mut AstNode<'a>, mut index: Vec<usize>) -> Option<&'b mut (AstNode<'a>)> {
+        if index.len() == 1 {
+            return Some(node);
+        }
+        let new_index = index.remove(0);
+        Self::search_for_raw_node(match node.children_scopes.get_mut(new_index) {
+            Some(n) => n,
+            None => return None,
+        }, index)
+    }
+    
+    fn search_for_node<'b>(node: &'b mut AstNode<'a>, mut index: Vec<usize>) -> Option<&'b mut (AstOperation<'a>, Option<bool>)> {
+        if index.len() == 1 {
+            return Some(node.operations.get_mut(index[0])?);
+        }
+        let new_index = index.remove(0);
+        Self::search_for_node( node.children_scopes.get_mut(new_index)?, index)
+    }
+    
+    fn run_vm(&mut self, reference: Option<&'a str>) -> Result<(Value<'a>, Lifetime), RuntimeError> {
+        let mut add_to_stack = true;
+        loop {
+            let mut index = self.line_index.clone();
+            index.remove(0);
+            // super safe bypass of the ownership model; the memory will be unchanged and live long enough though, so only so unsafe
+            let node = unsafe {
+                &mut *(
+                    match Self::search_for_node(&mut self.node[self.line_index[0]].node, index) {
+                        Some(n) => n,
+                        None => {
+                            // out of range (either pop an index or end if at the root
+                            self.line_index.pop();
+                            self.stack_calls.pop();
+                            // purely pointing to a file isn't enough; it needs the file, the scopes node
+                            if self.line_index.len() == 1 { break; }
+                            continue;
+                        }
+                    } as *mut (AstOperation<'a>, Option<bool>)
+                )
+            };
+            
+            if add_to_stack {
+                let mut index = self.line_index.clone();
+                index.remove(0);
+                // super safe bypass of the ownership model; the memory will be unchanged and live long enough though, so only so unsafe
+                let node = match Self::search_for_raw_node(&mut self.node[self.line_index[0]].node, index) {
+                    Some(n) => n,
+                    None => {
+                        // out of range (either pop an index or end if at the root
+                        self.line_index.pop();
+                        self.stack_calls.pop();
+                        // purely pointing to a file isn't enough; it needs the file, the scopes node
+                        if self.line_index.len() == 1 { break; }
+                        continue;
+                    }
+                };
+                self.stack_calls.push((node.name, node.base_line_index));
+            }
+            add_to_stack = false;
+            
+            // updating the debug state
+            if node.1 == Some(true) { unsafe { DEBUG = true; } }
+            else { unsafe { DEBUG = false; } }
+            let node = &node.0;  // mutability really wasn't needed, but always good to be safe, and the debug status isn't needed attached to it
+            
+            // todo! increment the counter properly while accounting for scopes and functions (by pointer, closure, whatever)
+            match node {
+                AstOperation::ScopeChange(index) => {
+                    self.line_index.push(*index);
+                    add_to_stack = true;
+                },
+                _ => {
+                    let index = self.line_index.len() - 1;
+                    self.line_index[index] += 1;
+                }
+            }
+            self.line_iteration += 1;
+            
+            // todo! run until the end has been reached, or until the reference was found if it is Some
+            // temp todo! do something idk what
+        }
+        
         Err(RuntimeError {
             message: "Not implemented yet".to_string(),
             location_name: "VmEnvironment::run_and_search".to_string(),
             error_type: RuntimeErrorType::LifetimeAccessViolation,
+            stack_trace: self.get_stack_trace(),
         })  // todo!
         // TODO! whenever a line is processed, check if it's a debug line, and, if so, change DEBUG to true, otherwise set it to false
     }
@@ -127,7 +212,7 @@ impl<'a> VmEnvironment<'a> {
     }
     
     // resolves a reference to a non-awaited future value (either negative lifetimes or the next keyword)
-    fn resolve_future(&self, variable_reference: &'a str, lifetime: Option<Lifetime>, mutability: Option<Mutability>) -> Result<Value<'a>, RuntimeError> {
+    fn resolve_future(&mut self, variable_reference: &'a str, lifetime: Option<Lifetime>, mutability: Option<Mutability>) -> Result<Value<'a>, RuntimeError> {
         let mut env = self.clone();
         // updating the value to ensure it has some value to run with (null by default)
         let variable = env.variables.get_mut(variable_reference).unwrap();
@@ -137,7 +222,7 @@ impl<'a> VmEnvironment<'a> {
                 start_line_counter: self.line_iteration,
                 alive_duration: None,
                 alive_lines: None,
-                scope: self.line_index.iter().map(|(a, _)| *a).collect(),
+                scope: self.line_index.iter().enumerate().map(|(i, a)| *a * (i < self.line_index.len()) as usize).collect(),
             }), mutability.unwrap_or(Mutability {
                 mutable: false,
                 reassignable: false,
@@ -155,6 +240,7 @@ impl<'a> VmEnvironment<'a> {
                             message: format!("Variable '{}' accessed outside of its lifetime", variable_reference),
                             location_name: "VmEnvironment::resolve_future".to_string(),
                             error_type: RuntimeErrorType::LifetimeAccessViolation,
+                            stack_trace: self.get_stack_trace(),
                         }),
                         false => Ok(Value::Null)
                     }
@@ -165,10 +251,18 @@ impl<'a> VmEnvironment<'a> {
                     message: format!("\n{} -- {:?}", get_random_future_error_text(), err),
                     location_name: "Somewhere in the future".to_string(),
                     error_type: RuntimeErrorType::Unknown,
+                    stack_trace: self.get_stack_trace(),
                 }),
                 false => Ok(Value::Null)
             }
         }
+    }
+    
+    fn get_stack_trace(&self) -> Vec<String> {
+        let mut trace = vec![];
+        for scope in &self.stack_calls {
+            trace.push(format!("{} on line {}\n", scope.0, scope.1))
+        } trace
     }
     
     // ensures the lifetime is currently valid
@@ -186,7 +280,7 @@ impl<'a> VmEnvironment<'a> {
             }
         }
         // checking if the scope is also valid
-        for (i, (a, _)) in self.line_index.iter().enumerate() {
+        for (i, (a)) in self.line_index.iter().enumerate() {
             if i >= lifetime.scope.len() { break; } // no need to check further
             if *a != lifetime.scope[i] { return false; }
         } true
@@ -209,6 +303,7 @@ impl<'a> VmEnvironment<'a> {
             message: format!("Variable '{}' not found", reference),
             location_name: "VmEnvironment::get_prioritized_reference".to_string(),
             error_type: RuntimeErrorType::VariableNotFound,
+            stack_trace: self.get_stack_trace(),
         })
     }
     
@@ -223,6 +318,7 @@ impl<'a> VmEnvironment<'a> {
             message: "Attempted to access a deleted value or property".to_string(),
             location_name: "VmEnvironment::get_overloaded".to_string(),
             error_type: RuntimeErrorType::DeletedValueAccess,
+            stack_trace: self.get_stack_trace(),
         }) }
         Ok(&*value_or_property)  // todo!
     }
