@@ -346,10 +346,10 @@ fn combine_tokens<'a>(tokens: &mut Vec<(Token<'a>, &'a str, usize, usize)>) {
     while index < tokens.len() {
         if index == 0 && matches!(tokens[index].0, Token::String("const" | "var")) {
             // getting the next two or three and the name and taking the right hand
-            let is_const = (tokens[index].0 == Token::String("const"), tokens[index + 1].0 == Token::String("const"));
+            let is_const = (tokens[index].0 != Token::String("const"), tokens[index + 1].0 != Token::String("const"));
             let optional;
             if matches!(tokens[index + 2].0, Token::String("const" | "var")) {
-                optional = Some(tokens[index + 2].0 == Token::String("const"));
+                optional = Some(tokens[index + 2].0 != Token::String("const"));
                 tokens.remove(index + 1);  // removing this one
             } else { optional = None }
             tokens.remove(index + 1);  // second const/var

@@ -45,6 +45,7 @@ pub enum AstOperation<'a> {
     FunctionCall (&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
     Closure     (AstNode<'a>),  // the closure node (will require at least opening brackets to identify) todo! add closures
     Return      (Option<Union<Expression<'a>, Value<'a>>>),
+    ScopeDrop   (usize),  // the number of scopes to drop down   todo!
 }
 
 // Made this before realizing there's a super unsafe implementation in the standard library
@@ -253,13 +254,25 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usi
         // Everything will find a way to segfault at some point, so why not make sure it happens sooner, and causes more damage?
         let tokens = unsafe { &mut *token_ptr.lock().add(i) };
         
+        let ast_line_node = get_ast_line(&mut tokens.0, &index, i - start_index);
+        match &mut node_ptr {
+            Union::Left(n) => n.operations.push(ast_line_node),
+            Union::Right(n) => unsafe {
+                (&mut **n).node.operations.push(ast_line_node)
+            },
+        }
+        let tokens = unsafe { &mut *token_ptr.lock().add(i) };
+        
         // if scope change, do thingy
         if i + 1 < file_size && current_indent != unsafe { *indent_ptr.lock().add(i + 1) } {
             if current_indent < unsafe { *indent_ptr.lock().add(i + 1) } {
                 // create a new scope, calling this function recursively with that index, and waiting for a return
                 let mut scoped_node = AstNode::default();
                 scoped_node.base_line_index = tokens.1;
-                scoped_node.name = "name goes here";  // todo!
+                scoped_node.name = &match tokens.0.get(0){
+                    Some(v) => v.1,
+                    None => "Unnamed",
+                }[..];  // todo!
                 let mut union = Union::Left(scoped_node);
                 i = generate_scoped_ast(token_ptr, indent_ptr, &mut union, i, file_size, {
                     let mut index = index.clone();
@@ -275,8 +288,19 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usi
                 };
                 // adding the new scope
                 match &mut node_ptr {
-                    Union::Left(n) => n.children_scopes.push(scoped_node),
-                    Union::Right(n) => unsafe { &mut **n }.node.children_scopes.push(scoped_node),
+                    Union::Left(n) => {
+                        if !matches!(tokens.0[0].0, Token::Function(..)) {
+                            n.operations.push((AstOperation::ScopeChange(n.children_scopes.len()), None));
+                        }
+                        n.children_scopes.push(scoped_node);
+                    },
+                    Union::Right(n) => {
+                        let n = unsafe { &mut **n };
+                        if !matches!(tokens.0[0].0, Token::Function(..)) {
+                            n.node.operations.push((AstOperation::ScopeChange(n.node.children_scopes.len()), None));
+                        }
+                        n.node.children_scopes.push(scoped_node);
+                    }
                 }
                 continue;
             } else {
@@ -286,13 +310,6 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usi
         }
         // else: call function to generate ast node and append it
         else {
-            let ast_line_node = get_ast_line(&mut tokens.0, &index, i - start_index);
-            match &mut node_ptr {
-                Union::Left(n) => n.operations.push(ast_line_node),
-                Union::Right(n) => unsafe {
-                    (&mut **n).node.operations.push(ast_line_node)
-                },
-            }
         }
         i += 1;
     } i
@@ -304,6 +321,10 @@ fn get_ast_line<'a>(tokens: &'a mut Vec<(Token<'a>, &'a str, usize, usize)>, ind
     let debug = tokens.iter().any(|(token,..)| {
         *token == Token::Debug()
     });
+    if debug {
+        println!("debugging!!");
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
     match &tokens[0] {
         // How long did they say a line should be at most? It was 150% of a full 4k screen, right?
         (Token::Assign(is_const_1, is_const_2, optional_const, lifetime, name, expr, priority), text, start, size) => {
@@ -350,7 +371,11 @@ fn get_expression<'a>(expr: &'a Vec<(Token<'_>, &'_ str, usize, usize)>) -> Opti
             Some(Union::Right(Value::ConstStr(*string)))
         },
         Token::SingleQ() | Token::DoubleQ() => {
-            let mut text = &expr[0].1[expr[0].2..];
+            let text = &expr[0].1[expr[0].2..];
+            let mut text = match expr[expr.len() - 1] {
+                (Token::Debug(),..) | (Token::Priority(..),..) => &text[..text.len() - 1],
+                _ => text
+            };  // trimming the final element if necessary
             // searching for the starting size
             let mut num_quotes = 0;
             for c in text.chars() {

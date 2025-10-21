@@ -28,7 +28,7 @@ struct RuntimeError {
 fn search_for_functions<'a>(
     functions: &'_ mut HashMap<&'a str, (Vec<usize>, &'a str)>,
     node: &AstNode<'a>,
-    mut scope: Vec<usize>
+    scope: Vec<usize>
 ) {
     // continuing the depth
     for (i, child_node) in node.children_scopes.iter().enumerate() {
@@ -40,7 +40,8 @@ fn search_for_functions<'a>(
     }
     
     // searching through the current operations
-    for (_i, (operation, _debug)) in node.operations.iter().enumerate() {
+    for (i, (operation, _debug)) in node.operations.iter().enumerate() {
+        if i == 0 { continue; }  // skipping the scope definition operation
         // searching for a function
         match operation {
             AstOperation::Function(name, index, parameters) => {
@@ -60,6 +61,14 @@ fn generate_functions<'a>(node: &'_ Vec<AstNodeFileWrapper<'a>>) -> HashMap<&'a 
     functions
 }
 
+fn locate_index_of_main(node: &Vec<AstNodeFileWrapper>) -> usize {
+    for (i, file) in node.iter().enumerate() {
+        if file.file_name == "main.rpp" {
+            return i;
+        }
+    } 0  // the fallback
+}
+
 pub fn run(node: Vec<AstNodeFileWrapper>) {
     println!("\n\n\n\n\n Running the VM!!! \n\n\n\n\nReceived: {:?}\n\n\n\n\n", node);
     
@@ -67,8 +76,9 @@ pub fn run(node: Vec<AstNodeFileWrapper>) {
     let functions = generate_functions(&node);
     let mut env = VmEnvironment {
         variables: HashMap::new(),
-        line_index: vec![0, 0],
+        line_index: vec![locate_index_of_main(&node), 0],
         stack_calls: vec![],
+        line_indexes_reserved: vec![0],
         node,
         removed_constructs: vec![],
         line_iteration: 0,
@@ -94,8 +104,9 @@ struct VmEnvironment<'a> {
     variables: HashMap<&'a str, Vec<(Value<'a>, Lifetime, Mutability, isize)>>,
     
     // a path to the current scope in the ast, along with the actual operation line index for each corresponding scope
-    line_index: Vec<usize>,
+    line_index: Vec<usize>,  // the path is absolute, the stack is not (the stack is all visited functions in order, the index is the literal index to the current node)
     stack_calls: Vec<(&'a str, usize)>,  // the stack can be used to resort the correct index when jumping between files
+    line_indexes_reserved: Vec<usize>,
     
     node: Vec<AstNodeFileWrapper<'a>>,
     
@@ -109,7 +120,20 @@ struct VmEnvironment<'a> {
 impl<'a> VmEnvironment<'a> {
     // runs until a value is found
     fn run_and_search(&mut self, reference: &'a str) -> Result<(Value<'a>, Lifetime), RuntimeError> {
-        self.run_vm(Some(reference))
+        match self.run_vm(Some(reference)) {
+            Ok(var) => Ok(
+                match var {
+                    Some((v, l)) => (v, l),
+                    None => return Err(RuntimeError {
+                        message: format!("Variable '{}' not found after execution", reference),
+                        location_name: "VmEnvironment::run_and_search".to_string(),
+                        error_type: RuntimeErrorType::VariableNotFound,
+                        stack_trace: self.get_stack_trace(),
+                    }),
+                }
+            ),
+            Err(e) => Err(e),
+        }
     }
     
     fn search_for_raw_node<'b>(node: &'b mut AstNode<'a>, mut index: Vec<usize>) -> Option<&'b mut (AstNode<'a>)> {
@@ -131,11 +155,11 @@ impl<'a> VmEnvironment<'a> {
         Self::search_for_node( node.children_scopes.get_mut(new_index)?, index)
     }
     
-    fn run_vm(&mut self, reference: Option<&'a str>) -> Result<(Value<'a>, Lifetime), RuntimeError> {
+    fn run_vm(&mut self, reference: Option<&'a str>) -> Result<Option<(Value<'a>, Lifetime)>, RuntimeError> {
         let mut add_to_stack = true;
         loop {
             let mut index = self.line_index.clone();
-            index.remove(0);
+            index.remove(0);  // the base file isn't necessary here?
             // super safe bypass of the ownership model; the memory will be unchanged and live long enough though, so only so unsafe
             let node = unsafe {
                 &mut *(
@@ -143,7 +167,10 @@ impl<'a> VmEnvironment<'a> {
                         Some(n) => n,
                         None => {
                             // out of range (either pop an index or end if at the root
+                            let line_index = self.line_indexes_reserved.pop().unwrap();
                             self.line_index.pop();
+                            let i = self.line_index.len() - 1;
+                            self.line_index[i] = line_index;
                             self.stack_calls.pop();
                             // purely pointing to a file isn't enough; it needs the file, the scopes node
                             if self.line_index.len() == 1 { break; }
@@ -154,33 +181,28 @@ impl<'a> VmEnvironment<'a> {
             };
             
             if add_to_stack {
-                let mut index = self.line_index.clone();
-                index.remove(0);
-                // super safe bypass of the ownership model; the memory will be unchanged and live long enough though, so only so unsafe
-                let node = match Self::search_for_raw_node(&mut self.node[self.line_index[0]].node, index) {
-                    Some(n) => n,
-                    None => {
-                        // out of range (either pop an index or end if at the root
-                        self.line_index.pop();
-                        self.stack_calls.pop();
-                        // purely pointing to a file isn't enough; it needs the file, the scopes node
-                        if self.line_index.len() == 1 { break; }
-                        continue;
-                    }
-                };
+                let index = self.line_index[1..self.line_index.len()].to_vec();
+                let node = Self::search_for_raw_node(&mut self.node[self.line_index[0]].node, index).unwrap();
                 self.stack_calls.push((node.name, node.base_line_index));
             }
             add_to_stack = false;
             
             // updating the debug state
-            if node.1 == Some(true) { unsafe { DEBUG = true; } }
+            if node.1 == Some(true) {
+                unsafe { DEBUG = true; }
+                println!("\nCall stack:\n{:?}\nOperation:\n{:?}\n", self.stack_calls, node);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             else { unsafe { DEBUG = false; } }
             let node = &node.0;  // mutability really wasn't needed, but always good to be safe, and the debug status isn't needed attached to it
             
             // todo! increment the counter properly while accounting for scopes and functions (by pointer, closure, whatever)
             match node {
                 AstOperation::ScopeChange(index) => {
-                    self.line_index.push(*index);
+                    let i = self.line_index.len() - 1;
+                    self.line_indexes_reserved.push(self.line_index[i] + 1);
+                    self.line_index[i] = *index;
+                    self.line_index.push(1);  // the 1 is to skip the definition of the scope which appears a second time
                     add_to_stack = true;
                 },
                 _ => {
@@ -192,15 +214,7 @@ impl<'a> VmEnvironment<'a> {
             
             // todo! run until the end has been reached, or until the reference was found if it is Some
             // temp todo! do something idk what
-        }
-        
-        Err(RuntimeError {
-            message: "Not implemented yet".to_string(),
-            location_name: "VmEnvironment::run_and_search".to_string(),
-            error_type: RuntimeErrorType::LifetimeAccessViolation,
-            stack_trace: self.get_stack_trace(),
-        })  // todo!
-        // TODO! whenever a line is processed, check if it's a debug line, and, if so, change DEBUG to true, otherwise set it to false
+        } Ok(None)
     }
     
     // runs the vm until completion or error
@@ -261,7 +275,7 @@ impl<'a> VmEnvironment<'a> {
     fn get_stack_trace(&self) -> Vec<String> {
         let mut trace = vec![];
         for scope in &self.stack_calls {
-            trace.push(format!("{} on line {}\n", scope.0, scope.1))
+            trace.push(format!("{} on line {}\n", scope.0, scope.1 + 1));
         } trace
     }
     
