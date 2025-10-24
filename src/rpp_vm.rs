@@ -120,23 +120,15 @@ struct VmEnvironment<'a> {
 impl<'a> VmEnvironment<'a> {
     // runs until a value is found
     fn run_and_search(&mut self, reference: &'a str) -> Result<(Value<'a>, Lifetime), RuntimeError> {
-        match self.run_vm(Some(reference)) {
-            Ok(var) => Ok(
-                match var {
-                    Some((v, l)) => (v, l),
-                    None => return Err(RuntimeError {
-                        message: format!("Variable '{}' not found after execution", reference),
-                        location_name: "VmEnvironment::run_and_search".to_string(),
-                        error_type: RuntimeErrorType::VariableNotFound,
-                        stack_trace: self.get_stack_trace(),
-                    }),
-                }
-            ),
-            Err(e) => Err(e),
-        }
+        Ok(self.run_vm(Some(reference))?.ok_or_else(|| RuntimeError {
+            message: format!("Variable '{}' not found after execution", reference),
+            location_name: "VmEnvironment::run_and_search".to_string(),
+            error_type: RuntimeErrorType::VariableNotFound,
+            stack_trace: self.get_stack_trace(),
+        })?)
     }
     
-    fn search_for_raw_node<'b>(node: &'b mut AstNode<'a>, mut index: Vec<usize>) -> Option<&'b mut (AstNode<'a>)> {
+    fn search_for_raw_node<'b>(node: &'b mut AstNode<'a>, mut index: Vec<usize>) -> Option<&'b mut AstNode<'a>> {
         if index.len() == 1 {
             return Some(node);
         }
@@ -262,7 +254,7 @@ impl<'a> VmEnvironment<'a> {
             },
             Err(err) => match unsafe { DEBUG } {
                 true => Err(RuntimeError {
-                    message: format!("\n{} -- {:?}", get_random_future_error_text(), err),
+                    message: format!("\n{}\n -- {:?}", get_random_future_error_text(), err),
                     location_name: "Somewhere in the future".to_string(),
                     error_type: RuntimeErrorType::Unknown,
                     stack_trace: self.get_stack_trace(),
@@ -273,10 +265,14 @@ impl<'a> VmEnvironment<'a> {
     }
     
     fn get_stack_trace(&self) -> Vec<String> {
-        let mut trace = vec![];
+        /*let mut trace = vec![];
         for scope in &self.stack_calls {
             trace.push(format!("{} on line {}\n", scope.0, scope.1 + 1));
-        } trace
+        } trace*/
+        self.stack_calls
+            .iter()
+            .map(|scope| format!(" * {} with a scope starting around line {}\n", scope.0, scope.1 + 1))
+            .collect()
     }
     
     // ensures the lifetime is currently valid
@@ -294,7 +290,7 @@ impl<'a> VmEnvironment<'a> {
             }
         }
         // checking if the scope is also valid
-        for (i, (a)) in self.line_index.iter().enumerate() {
+        for (i, a) in self.line_index.iter().enumerate() {
             if i >= lifetime.scope.len() { break; } // no need to check further
             if *a != lifetime.scope[i] { return false; }
         } true

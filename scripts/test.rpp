@@ -19,6 +19,7 @@ export test to main.rpp
 
 ======= main.rpp =======
 import test from exported.exporting
+import print from std.rpp
 
 const const const world = hello world!!!!
 

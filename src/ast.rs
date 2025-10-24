@@ -46,6 +46,7 @@ pub enum AstOperation<'a> {
     Closure     (AstNode<'a>),  // the closure node (will require at least opening brackets to identify) todo! add closures
     Return      (Option<Union<Expression<'a>, Value<'a>>>),
     ScopeDrop   (usize),  // the number of scopes to drop down   todo!
+    NoOp         (Vec<(Token<'a>, &'a str, usize, usize)>, usize),
 }
 
 // Made this before realizing there's a super unsafe implementation in the standard library
@@ -104,7 +105,7 @@ pub enum VariableType<'a> {
 pub struct AstNodeFileWrapper<'a> {
     pub node: AstNode<'a>,
     pub exporting: Vec<(Vec<usize>, &'a str)>,  // the indexes of the scopes in order to get to the exported function (the final index is the index of the operations instead of tree nodes)
-    pub importing: Vec<(&'a str, Option<&'a str>, &'a str)>,  // function name, optional alias, file name
+    pub importing: Vec<(&'a str, Option<&'a str>, &'a str, Vec<usize>)>,  // function name, optional alias, file name, index
     pub file_name: &'a str,
 }
 
@@ -118,7 +119,9 @@ impl<T> PtrSync<T> {
 }
 
 // generates an ast with all files embedded based on exports allowing for a natural control flow in emulation/interpretation
-pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, usize)>, usize)>, indented: Vec<usize>) -> Vec<AstNodeFileWrapper<'a>> {
+pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
+                                 indented: Vec<usize>
+) -> Vec<AstNodeFileWrapper<'a>> {
     let start_time = std::time::Instant::now();
     
     let (mut file_tokens, mut file_indents) = break_into_files(tokens, indented);
@@ -184,6 +187,19 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
         }
     }
     
+    for file in &files {
+        // identifying all functions
+        // todo! identify functions (including imports) and extract any calls into the correct ast syntax node, rather than a blank no-op operation
+        let mut functions = vec![];  // a per-file function table
+        for imported in &file.importing {
+            //FunctionCall (&'b str, Vec<usize>, Vec<&'b str>),  // name, index, parameters
+            // todo! trace the function down to it's origin (even through multiple import/exports) until the base index and necessary parameters can be found
+            let index: Vec<usize> = vec![];
+            let parameters: Vec<&str> = vec![];
+            functions.push((imported.1.unwrap_or(imported.0), index, parameters));
+        }
+    }
+    
     let duration = start_time.elapsed();
     for file in &files {
         println!("Generated file: {}\n > {:?}", &file.file_name, &file.node);
@@ -205,7 +221,8 @@ fn handle_imports_and_exports<'a>(
     for i in 0..file_size {
         match &unsafe { &(*token_ptr.add(i)).0 }[0] {
             (Token::Import(name, optional_alias, file_add), _text, _start, _size) => {
-                file.importing.push((*name, *optional_alias, *file_add));
+                // todo! add the actual index to make jump between things much easier (the index needs to link directly to the original function even if it's through a chain of imports)
+                file.importing.push((*name, *optional_alias, *file_add, vec![]));
             },
             (Token::Export(name, file_add), _text, _start, _size) => {
                 // todo! actually paste the real index possibly change the type to reflect it correctly
@@ -216,12 +233,13 @@ fn handle_imports_and_exports<'a>(
     }
 }
 
-fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
-                           indent_ptr: PtrSync<*mut usize>,
-                           mut node_ptr: &'_ mut Union<AstNode<'a>, *mut AstNodeFileWrapper<'a>>,
-                           mut i: usize,
-                           file_size: usize,
-                           index: Vec<usize>,
+fn generate_scoped_ast<'a>(
+    token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
+    indent_ptr: PtrSync<*mut usize>,
+    mut node_ptr: &'_ mut Union<AstNode<'a>, *mut AstNodeFileWrapper<'a>>,
+    mut i: usize,
+    file_size: usize,
+    index: Vec<usize>,
 ) -> usize {
     // check if it's the file wrapper, if so finding all imports and exports
     match &mut node_ptr {
@@ -254,7 +272,9 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usi
         // Everything will find a way to segfault at some point, so why not make sure it happens sooner, and causes more damage?
         let tokens = unsafe { &mut *token_ptr.lock().add(i) };
         
-        let ast_line_node = get_ast_line(&mut tokens.0, &index, i - start_index);
+        let ast_line_node = get_ast_line(&mut tokens.0, &index, i - start_index, unsafe {
+            { &*token_ptr.lock().add(i) }.1
+        });
         match &mut node_ptr {
             Union::Left(n) => n.operations.push(ast_line_node),
             Union::Right(n) => unsafe {
@@ -269,9 +289,14 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usi
                 // create a new scope, calling this function recursively with that index, and waiting for a return
                 let mut scoped_node = AstNode::default();
                 scoped_node.base_line_index = tokens.1;
-                scoped_node.name = &match tokens.0.get(0){
+                scoped_node.name = &match tokens.0.get(1){
                     Some(v) => v.1,
-                    None => "Unnamed",
+                    // many operations are already condensed into a single expression token
+                    None => match &tokens.0[0].0 {
+                        Token::Function(name,..) => name,
+                        Token::Class(name) => name,
+                        _ => "Unnamed",
+                    }
                 }[..];  // todo!
                 let mut union = Union::Left(scoped_node);
                 i = generate_scoped_ast(token_ptr, indent_ptr, &mut union, i, file_size, {
@@ -317,14 +342,10 @@ fn generate_scoped_ast<'a>(token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usi
 
 // given a single line of tokens, generate the given operation those tokens represent
 // any scope data should already be handled, so this should purely worry about the vector of tokens
-fn get_ast_line<'a>(tokens: &'a mut Vec<(Token<'a>, &'a str, usize, usize)>, index: &Vec<usize>, i: usize) -> (AstOperation<'a>, Option<bool>) {
+fn get_ast_line<'a>(tokens: &'a mut Vec<(Token<'a>, &'a str, usize, usize)>, index: &Vec<usize>, i: usize, line_number: usize) -> (AstOperation<'a>, Option<bool>) {
     let debug = tokens.iter().any(|(token,..)| {
         *token == Token::Debug()
     });
-    if debug {
-        println!("debugging!!");
-        std::thread::sleep(std::time::Duration::from_millis(1000));
-    }
     match &tokens[0] {
         // How long did they say a line should be at most? It was 150% of a full 4k screen, right?
         (Token::Assign(is_const_1, is_const_2, optional_const, lifetime, name, expr, priority), text, start, size) => {
@@ -341,6 +362,7 @@ fn get_ast_line<'a>(tokens: &'a mut Vec<(Token<'a>, &'a str, usize, usize)>, ind
             }, parameters.clone()), Some(debug))
         }
         // TODO! add more operations here
+        (Token::String(..),..) => { (AstOperation::NoOp(tokens.to_owned(), line_number), Some(debug)) },
         _ => { (AstOperation::None, Some(debug)) }
     }
 }

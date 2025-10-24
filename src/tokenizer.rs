@@ -1,5 +1,5 @@
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token<'a> {
     Priority (isize),     // the priority ! and count of them
     String   (&'a str),   // any non-identified token (everything is strings therefor everything has to compile)
@@ -37,7 +37,7 @@ pub enum Token<'a> {
     Assign   (bool, bool, Option<bool>, Lifetime, &'a str, Option<Vec<(Token<'a>, &'a str, usize, usize)>>, isize),  // is const, is const, is const, name, right side
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Clone, Eq)]
 pub enum MathOp {
     Add,
     Subtract,
@@ -53,7 +53,7 @@ pub enum MathOp {
     Not,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CompareOp {
     Equal,
     NotEqual,
@@ -63,14 +63,14 @@ pub enum CompareOp {
     LessEqual,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Boolean {
     True,
     False,
     Maybe,  // You can never be too sure
 }
 
-#[derive(Debug, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Lifetime {
     #[default] Infinity,  // This means all data leaks.... jk, I don't know anyone called memory leak so it'll be fine
     NegativeInfinity,  // This means all data leaks.... jk, I don't know anyone called memory leak so it'll be fine
@@ -99,12 +99,13 @@ impl<T> PtrSync<T> {
 static NUM_THREADS: usize = 8;  // more threads is always better, right? What could go wrong
 
 fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<(Vec<(Token<'_>, &'_ str, usize, usize)>, usize)>, Vec<usize>) {
-    // why am I using a box? Idk, hopefully it'll ensure the memory address holds up better (it doesn't, this is called denial about bad code)
+    // why am I using a box? idk, hopefully it'll ensure the memory address holds up better (it doesn't, this is called denial about bad code)
     let mut indentation = Box::new(vec![]);
     let mut output = Box::new(vec![]);
     let mut tokens: Box<Vec<(Vec<(Token, &str, usize, usize)>, usize)>> = Box::new(vec![]);
     for (index, line) in text.iter().enumerate() {
         output.push(vec![*line]);
+        // setting the line number to make tracing errors or code execution relative to the original file much easier
         tokens.push((vec![], index));  // woops..... kinda need to actually allocate the array and not just index into it
         indentation.push(0);
     }
@@ -163,6 +164,7 @@ fn break_tokens(text: Vec<&'_ str>) -> (Vec<Vec<&'_ str>>, Vec<(Vec<(Token<'_>, 
                 // Unsafe is the new safe, copyright 2025©
                 let line = unsafe {&mut *(&mut slice_ptr.lock()).add(slice_index.0 + i) };
                 let tokens = unsafe {&mut *(&mut tokens_ptr.lock()).add(slice_index.0 + i) };
+                //tokens.1 = slice_index.0 + i;
                 let indentation = unsafe {&mut *(&mut indent_ptr.lock()).add(slice_index.0 + i) };
                 let whole = &line[0][..];
                 split_line(line);
