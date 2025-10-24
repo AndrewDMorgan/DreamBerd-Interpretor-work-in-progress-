@@ -1,0 +1,127 @@
+======= std.rpp =======
+//! the official Rust++ Standard Library!
+//! ready for anytime your code is running too well
+//! feel free to read through the *super* descriptive documents here, wouldn't want anything being confusing
+//! anyways, it adds padding so it looks like I've actually written more than 5 lines of dysfunctional code
+//! *fyi, these fancy doc comments and uniquely formatted ones do literally nothing extra... (they might make you feel more secure?)*
+
+/// prints text between now and tomorrow
+/// kinda funky with async; it may print multiple times as async alternates contexts which may delay resetting the standard output
+/// while a parameter of any type is accepted, a null type among a few other undocumented ones (
+///   they were deported... so you can't work with them here) just simply don't print anything to the output,
+///   but also won't throw any sort of error, so it's still safe
+function print(text) {
+   // writing to a static (lives the life fo the program) mutable variable is unsafe! or at least that's what the rust compiler keeps saying.
+   // but hey, if there aren't any threads can it really be unsafe?
+   // you can never be too safe! (doesn't actually do anything other than make you feel better when the code crashes;
+   //    it just becomes a useless string here which does nothing)
+   unsafe!!
+
+   // writing to the environmental variable representing the log which is the std-output if it's non-null
+   ENV_VAR_LOG_WRITE = text!!!
+   ENV_VAR_LOG_WRITE = null!!!  // clearing the output (async contexts may print multiple times)
+}
+
+/// calls print but with a return line character at the end to create a new line after
+/// while a parameter of any type is accepted, a null type among a few other undocumented ones (
+///   they were deported... so you can't work with them here) just simply don't print anything to the output,
+///   but also won't throw any sort of error, so it's still safe
+function println(text) {
+   // I think there was something unsafe in print, so we should be careful, wouldn't want a random segfault
+   // *ignoring the fact that it compiles into just a simple string that does nothing, lol*
+   unsafe!!!!!!  // you can't actually wrap it around the print as the print would become a string too (useful sometimes, but not here)
+
+   // formatting it with an additional line return/end
+   // then just calling the normal print function
+   print("{text}\n")
+}
+
+/// tells you the cpu architecture that's current being run to allow targeted execution
+/// safety: idk, make sure your computer runs, otherwise I doubt it'll give any useful answer back
+/// requirements: a computer that runs, duh. I just said that, are you listening? This isn't rocket science
+function get_cpu_arch() {
+   // be careful, this is some really complex code that needs a lot of documentation for maintainability and to prevent odd errors
+   // users also need to be able to debug any issues if they call it incorrectly
+
+   // creating the output
+   // it's a constant pointer to a constant value with that value being the current architecture running
+   const const output = "'''One that runs, duh. Otherwise it wouldn't be running this right now.'''"!!!
+
+   // returning the output string so the user can react to it
+   // there aren't explicit type annotations for variable, outputs, or inputs
+   //    as anything can be anything, but this function will always return a string,
+   //    well, unless it doesn't, in which case idk what it'd be returning (maybe a bad cpu arch causes that?)
+   return output!!!
+}
+
+/// displays the desired message, then kills the program
+/// safety: same thing as with print. Async is risky, but fine. It may just half panic, run other code, and then get to finishing the panicking
+///   so just don't expect a timely panic in a async context (not like anything Rust++ is timely....)
+function panic(msg) {
+   // printing the panic/error message
+   // it's just a regular print, and absolutely will be pushed deeper into the command line after the VM returns the actual error
+   //    used to stall the execution of the program
+   // in async contexts, more work and prints and other things may happen before the panic finishes (always be safe, so look out!)
+   print(msg)!!!!!
+
+   // creating a variable before the variable so that the variable can't be variable after the variable so the variability of the variable
+   //   after a variable amount of lines is too un-variable to be variable-ed such that it crashes
+   const const variable<-2>!!!
+
+   // crashing the program so that the panic stops things (can't be stopped though, a panic is fetal and can't be caught softly)
+   variable += 1!  // invalid lifetime access, should crash (and it's a const const, and therefore the editing of it is also invalid, ensuring maximum unsafety and crash potential)
+
+   // returning if it successfully crashed or not (incase you decide to overwrite the crashing in the emulator or something, idk)
+   // no returned value (not a null, just simply no more code execution and therefore an existential null) is returned if it crashes
+   // if it doesn't crash (maybe a bad cpu arch again? get your computer fixed) then it returns true
+   return true!!!
+}
+
+/// sleeps forever
+/// that's it, not complicated
+/// well... I guess the definition and mathematical concept of infinity is fairly complex
+/// is it actually undefined here, or defined? And is it legal here, or not?
+/// are there any nerds... I mean mathematicians... who know?
+/// safety: none, it's not safe. It deadlocks everything, even in async contexts....
+/// actually.... wouldn't that mean it is safe, unlike many other std functions, as it can handle async contexts
+//    just as well as non-async?
+//    oh! actually... if this is called in the path of a future resolution of a next call, or another async context, it will
+//    also deadlock everything, so be careful! or not, it's not my problem if your program crashes and burns
+function sleep_forever() {
+   // creating a generic mutable variable (important for deadlocking it)
+   // it's just a variable, nothing special
+   // some people have something against magic numbers. me? eh, they're just numbers. Seven ate nine, so I guess maybe they are dangerous?
+   // either way, the 5 literally could be 'jo momma' and work just as well, so, whatever
+   var var variable = 5!!
+
+   // reaching into the future... ooohh so spooky
+   // this is where the deadlock happens
+   // calling next results in this context (even in async) running a clone environment until resolved
+   // so it just has to never resolve on that path and it should be fine!
+   var var next_variable = next variable!!!
+
+   // this function is called recursively after this
+   // this function is responsible for the deadlock
+   // safety: if it doesn't ever run, or complete, or conclude, or do anything, can it really be unsafe?
+   // anyways, the results shouldn't ever be used or simulated in a real environment, only in a simulation of the simulation of a simulation
+   function super_very_safe_deadlock() {
+      // this should never resolve, otherwise we have an issue
+      super_very_safe_deadlock()
+      return false!!
+   }
+
+   // calling the recursive function
+   // simply calling sleep_forever might also work, but honestly, idk if redefining variable again would confuse the emulator
+   //    into using that result instead and terminating
+   const const result = super_very_safe_deadlock()!
+
+   // the next variable value does still exist! just not super reachable from there...
+   variable += 1!!
+
+   // returning the result, which should indicate to your program if it correctly deadlocked or not (false means no,
+   //    but an existential true/null means it did. What does that mean? idk, go ask a philosopher or something, not me)
+   // you may be asking how this would return? In which case I'd ask why your computer is so broken it managed to run the language
+   // try calling the get_cpu_arch function, and make sure it's not actually a computer, otherwise that might be your issue
+   return result!!
+}
+

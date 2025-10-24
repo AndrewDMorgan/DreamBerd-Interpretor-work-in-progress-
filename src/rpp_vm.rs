@@ -1,5 +1,6 @@
 use crate::ast::{AstNode, AstNodeFileWrapper, AstOperation, Union};
 use std::collections::HashMap;
+use crate::tokenizer::{Token};
 
 static mut DEBUG: bool = false;
 
@@ -66,7 +67,7 @@ fn locate_index_of_main(node: &Vec<AstNodeFileWrapper>) -> usize {
         if file.file_name == "main.rpp" {
             return i;
         }
-    } 0  // the fallback
+    } node.len() - 2  // the fallback (last file)
 }
 
 pub fn run(node: Vec<AstNodeFileWrapper>) {
@@ -75,7 +76,24 @@ pub fn run(node: Vec<AstNodeFileWrapper>) {
     // actually run the vm..... (sounds like a lot of work)
     let functions = generate_functions(&node);
     let mut env = VmEnvironment {
-        variables: HashMap::new(),
+        variables: {
+            let mut hash = HashMap::new();
+            // environmental variables
+            
+            // the std output
+            hash.insert("ENV_VAR_LOG_WRITE", vec![(Value::Null, Lifetime {
+                start_time: std::time::Instant::now(),
+                start_line_counter: 0,
+                alive_duration: None,
+                alive_lines: None,
+                scope: vec![]
+            }, Mutability {
+                reassignable: false,
+                mutable: true,
+                global_control: None,
+            }, isize::MAX)]);
+            hash
+        },
         line_index: vec![locate_index_of_main(&node), 0],
         stack_calls: vec![],
         line_indexes_reserved: vec![0],
@@ -203,6 +221,23 @@ impl<'a> VmEnvironment<'a> {
                 }
             }
             self.line_iteration += 1;
+            
+            // output the standard output if it's not null
+            print!("{}", match self.variables.get("ENV_VAR_LOG_WRITE") {
+                Some(vec) => match &vec[0].0 {
+                    Value::Bool(bool) => match bool {
+                        Bool::False => String::from("false"),
+                        Bool::True => String::from("true"),
+                        Bool::Maybe => String::from("maybe"),
+                    },
+                    Value::Int(number) => format!("{}", number),
+                    Value::Float(number) => format!("{}", number),
+                    Value::Str(string) => format!("{}", string),
+                    // todo! add support for other data types
+                    _ => continue
+                },
+                _ => continue
+            });
             
             // todo! run until the end has been reached, or until the reference was found if it is Some
             // temp todo! do something idk what

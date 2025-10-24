@@ -97,12 +97,21 @@ impl AstOperation<'_> {
                 match optional_expression_or_const {
                     Some(Union::Left(expr)) => {format!("expr")},  // todo!
                     Some(Union::Right(constant)) => {
-                        format!("Set '{}' to {}", var_text, match constant {
+                        format!("Set '{}' to {}    ({} pointer to a {} value{})", var_text, match constant {
                             Value::Variable(var) => format!("variable '{}'", Self::get_var_text(var)),
                             Value::ConstInt(value) => format!("int '{}'", value),
                             Value::ConstFloat(value) => format!("float '{}'", value),
                             Value::ConstStr(value) => format!("string '{}'", value),
                             Value::FuncCall(..) => format!("'Function call'"),  // todo!
+                        }, match var.reassignable {
+                            true => "reassignable",
+                            false => "constant",
+                        }, match var.mutable {
+                            true => "mutable",
+                            false => "constant",
+                        }, match var.global {
+                            Some(true) => "; global scope--takes ownership of construct",
+                            _ => ""
                         })
                     },
                     _ => {
@@ -181,7 +190,7 @@ unsafe impl<T> Sync for PtrSync<T> {}  // does this do anything? Nope. The cpu s
 unsafe impl<T> Send for PtrSync<T> {}  // just send it. If I'm shipping a package I don't *need* a package or envelope, just slap on a label and send it
 impl<T> PtrSync<T> {
     fn new(t: T) -> Self { PtrSync(t) }  // Why can't you just do PtrSync(t)? idk
-    fn lock(&self) -> &T { &self.0 }  // Don't ask why it was called this, idk (used to wrap around mutex, but dropped the mutex, and now a lock that doesn't lock, perfect)
+    fn lock(self) -> T { self.0 }  // Don't ask why it was called this, idk (used to wrap around mutex, but dropped the mutex, and now a lock that doesn't lock, perfect)
 }
 
 // generates an ast with all files embedded based on exports allowing for a natural control flow in emulation/interpretation
@@ -217,7 +226,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
             
             // when in doubt, or when the compiler keeps complaining, just make it static!
             // why can't we just call all data static? Just Dreamberd it and treat all lifetimes as infinity, what could ever go wrong?
-            std::mem::transmute::<&mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>, &'static mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>>(&mut file_tokens[file_index]).as_mut_ptr()
+            std::mem::transmute::<&mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>, &'static mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>>(&mut file_tokens[file_index]).as_ptr()
         });
         let indent_ptr = PtrSync::new(unsafe {
             // what a great idea
@@ -225,7 +234,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
             // anyway, rust-analyzer was working way to well before, and now it keeps crashing!
             
             // *edit: fourth RustRover crash in, maybe I should change this? Nah, jk, I'll never fix it (if it ain't broke don't fix it, and it's still holding on by the duct tape and glue)
-            std::mem::transmute::<&mut Vec<usize>, &'static mut Vec<usize>>(&mut file_indents[file_index]).as_mut_ptr()
+            std::mem::transmute::<&mut Vec<usize>, &'static mut Vec<usize>>(&mut file_indents[file_index]).as_ptr()
         });
         
         // Is this safe? What kind of question is that? Are you OSHA or something, cause I don't know anyone called OSHA
@@ -237,7 +246,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
         });
         let handle = std::thread::spawn(move || {
             // do things here...
-            let mut union = Union::Right(*file_ptr.lock());
+            let mut union = Union::Right(file_ptr.lock());
             generate_scoped_ast(token_ptr, indent_ptr, &mut union, 0, file_size, vec![file_index]);
         });
         handles.push(handle);
@@ -279,7 +288,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
     }
     
     for (index, file) in final_files.iter().enumerate() {
-        if file.file_name == "main.rpp" || index == final_files.len() - 1 {
+        if file.file_name == "main.rpp" || index == final_files.len() - 2 {
             let text = file.node.get_text(1);
             println!("Ast Text Formated:\n{}", text.join("\n"));
             break;
@@ -291,7 +300,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
 
 fn handle_imports_and_exports<'a>(
     file: &mut AstNodeFileWrapper<'a>,
-    token_ptr: &'_ *mut (Vec<(Token<'a>, &'a str, usize, usize)>, usize), file_size: usize)
+    token_ptr: *const (Vec<(Token<'a>, &'a str, usize, usize)>, usize), file_size: usize)
 {
     for i in 0..file_size {
         match &unsafe { &(*token_ptr.add(i)).0 }[0] {
@@ -309,8 +318,8 @@ fn handle_imports_and_exports<'a>(
 }
 
 fn generate_scoped_ast<'a>(
-    token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
-    indent_ptr: PtrSync<*mut usize>,
+    token_ptr: PtrSync<*const (Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
+    indent_ptr: PtrSync<*const usize>,
     mut node_ptr: &'_ mut Union<AstNode<'a>, *mut AstNodeFileWrapper<'a>>,
     mut i: usize,
     file_size: usize,
@@ -326,12 +335,8 @@ fn generate_scoped_ast<'a>(
     match &mut node_ptr {
         Union::Left(node) => {
             // grabbing the context
-            let ast_line_node = unsafe { get_ast_line(&mut (*token_ptr.lock().add(i)).0, &index, 0, (*token_ptr.lock().add(i)).1).0 };
-            node.context = Some(
-                Box::new(unsafe {
-                    ast_line_node.to_owned()
-                })
-            );
+            let ast_line_node = unsafe { get_ast_line(&(*token_ptr.lock().add(i)).0, &index, 0, (*token_ptr.lock().add(i)).1).0 };
+            node.context = Some(Box::new(ast_line_node.to_owned()));
             let ast_line_node = AstOperation::Context(Box::new(ast_line_node));
             
             match &mut node_ptr {
@@ -366,9 +371,9 @@ fn generate_scoped_ast<'a>(
         // Unsafe is the new safe! Copyright 2025 by Rust++ Foundation, all rights reserved.
         // Life is inherently unsafe, so why not accept all that life is?
         // Everything will find a way to segfault at some point, so why not make sure it happens sooner, and causes more damage?
-        let tokens = unsafe { &mut *token_ptr.lock().add(i) };
+        let tokens = unsafe { &*token_ptr.lock().add(i) };
         
-        let ast_line_node = get_ast_line(&mut tokens.0, &index, i - start_index, unsafe {
+        let ast_line_node = get_ast_line(&tokens.0, &index, i - start_index, unsafe {
             { &*token_ptr.lock().add(i) }.1
         });
         match &mut node_ptr {
@@ -381,7 +386,7 @@ fn generate_scoped_ast<'a>(
                 (&mut **n).node.operations.push(ast_line_node);
             },
         }
-        let tokens = unsafe { &mut *token_ptr.lock().add(i) };
+        let tokens = unsafe { &*token_ptr.lock().add(i) };
         
         // if scope change, do thingy
         if i + 1 < file_size && current_indent != unsafe { *indent_ptr.lock().add(i + 1) } {
@@ -444,7 +449,7 @@ fn generate_scoped_ast<'a>(
 
 // given a single line of tokens, generate the given operation those tokens represent
 // any scope data should already be handled, so this should purely worry about the vector of tokens
-fn get_ast_line<'a>(tokens: &'a mut Vec<(Token<'a>, &'a str, usize, usize)>, index: &Vec<usize>, i: usize, line_number: usize) -> (AstOperation<'a>, Option<bool>) {
+fn get_ast_line<'a>(tokens: &'a Vec<(Token<'a>, &'a str, usize, usize)>, index: &Vec<usize>, i: usize, line_number: usize) -> (AstOperation<'a>, Option<bool>) {
     let debug = tokens.iter().any(|(token,..)| {
         *token == Token::Debug()
     });

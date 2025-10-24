@@ -46,8 +46,10 @@ fn main() {
     
     // look how clean this looks! Just please don't actually go into the functions.... unless it seg faults (then just run, it's not worth it)
     // don't use any of that as an actual example of how to program, but rather maybe how not to do certain things
-    let text = std::fs::read_to_string("./scripts/test.rpp").expect("Failed to read example.txt");
-    let text = text.lines().collect();
+    let text = std::fs::read_to_string("./scripts/test.rpp").expect("Failed to read input file");
+    // injecting it into the source code (super simply way, definitely won't cause issues later)
+    let std_text = std::fs::read_to_string("./scripts/std.rpp").expect("Failed to read std.rpp (Rust++ Standard Library)");
+    let text = vec![text.lines().collect::<Vec<&str>>(), std_text.lines().collect::<Vec<&str>>()].concat();
     let (tokens, indents) = tokenize(text);
     let node = generate_embedded_ast(tokens, indents);
     rpp_vm::run(node);
