@@ -1,12 +1,15 @@
 use crate::tokenizer::{self, Token};
+use std::fmt::Display;
 
 // I could have default implemented.... or I could resort to null pointers..... hmmmm..... Jk, I'm not a masochist
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct AstNode<'a> {
     pub children_scopes: Vec<AstNode<'a>>,
     pub operations: Vec<(AstOperation<'a>, Option<bool>)>,  // the option bool is for if the line is a debug line
+    pub ordering: Vec<Union<usize, usize>>,  // left -> index to next ast op, right -> index to next child
     pub base_line_index: usize,
     pub name: &'a str,
+    pub context: Option<Box<AstOperation<'a>>>,
 }
 
 impl<'a> AstNode<'a> {
@@ -33,6 +36,28 @@ impl<'a> AstNode<'a> {
             None => None
         }
     }
+    
+    pub fn get_text(&self, depth: usize) -> Vec<String> {
+        let mut text = vec![];
+        for ordered in &self.ordering {
+            match ordered {
+                Union::Left(op_index) => {
+                    text.push(format!("{}{}", "   ".repeat(depth), self.operations[*op_index].0.get_text()));
+                },
+                Union::Right(child_index) => {
+                    text.append(&mut self.children_scopes[*child_index].get_text(depth + 1));
+                }
+            }
+        } text
+    }
+}
+
+impl Display for AstNode<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = self.get_text(1);
+        
+        write!(f, "{}", text.join("\n"))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,11 +67,52 @@ pub enum AstOperation<'a> {
     Assignment  (Variable<'a>, Option<Union<Expression<'a>, Value<'a>>>),  // variable name and expression for resolution of the value at runtime
     None,
     Function    (&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
-    FunctionCall (&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
+    FunctionCall(&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
     Closure     (AstNode<'a>),  // the closure node (will require at least opening brackets to identify) todo! add closures
     Return      (Option<Union<Expression<'a>, Value<'a>>>),
     ScopeDrop   (usize),  // the number of scopes to drop down   todo!
-    NoOp         (Vec<(Token<'a>, &'a str, usize, usize)>, usize),
+    NoOp        (Vec<(Token<'a>, &'a str, usize, usize)>, usize),
+    Context     (Box<AstOperation<'a>>),  // context for the scope (not to be run)
+}
+
+impl AstOperation<'_> {
+    fn get_var_text(variable: &Variable) -> String {
+        match &variable.var_type {
+            VariableType::Var(name) => format!("{}", name),
+            VariableType::Array(name,..) => format!("{}", name),
+            VariableType::Member(name, child) => format!("{}.{}", name, Self::get_var_text(&*child)),
+        }
+    }
+    
+    pub fn get_text(&self) -> String {
+        match self {
+            AstOperation::NoOp(text,..) => {
+                text[0].1[text[0].2..text[0].2+text[0].3].to_string()
+            },
+            AstOperation::Function(name, _index, parameters) => {
+                format!("Function '{}' with parameter(s) '{}'", name, parameters.join(", "))
+            },
+            AstOperation::Assignment(var, optional_expression_or_const) => {
+                let var_text = Self::get_var_text(var);
+                match optional_expression_or_const {
+                    Some(Union::Left(expr)) => {format!("expr")},  // todo!
+                    Some(Union::Right(constant)) => {
+                        format!("Set '{}' to {}", var_text, match constant {
+                            Value::Variable(var) => format!("variable '{}'", Self::get_var_text(var)),
+                            Value::ConstInt(value) => format!("int '{}'", value),
+                            Value::ConstFloat(value) => format!("float '{}'", value),
+                            Value::ConstStr(value) => format!("string '{}'", value),
+                            Value::FuncCall(..) => format!("'Function call'"),  // todo!
+                        })
+                    },
+                    _ => {
+                        format!("Alloc '{}'", var_text)
+                    }
+                }
+            },
+            _ => format!("{:?}", self),
+        }
+    }
 }
 
 // Made this before realizing there's a super unsafe implementation in the standard library
@@ -211,6 +277,15 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
     for file in files {
         final_files.push(*file);
     }
+    
+    for (index, file) in final_files.iter().enumerate() {
+        if file.file_name == "main.rpp" || index == final_files.len() - 1 {
+            let text = file.node.get_text(1);
+            println!("Ast Text Formated:\n{}", text.join("\n"));
+            break;
+        }
+    }
+    
     final_files
 }
 
@@ -242,8 +317,35 @@ fn generate_scoped_ast<'a>(
     index: Vec<usize>,
 ) -> usize {
     // check if it's the file wrapper, if so finding all imports and exports
+    let current_indent = {
+        if i + 1 >= file_size { 0 }
+        // grabbing the next line's indentation as any increase on scope will begin on the line before the scope change (such as the function/class def or conditional branch)
+        else { unsafe { *indent_ptr.lock().add(i + 1) } }
+    };
+    let start_index = i;
     match &mut node_ptr {
-        Union::Left(..) => {},
+        Union::Left(node) => {
+            // grabbing the context
+            let ast_line_node = unsafe { get_ast_line(&mut (*token_ptr.lock().add(i)).0, &index, 0, (*token_ptr.lock().add(i)).1).0 };
+            node.context = Some(
+                Box::new(unsafe {
+                    ast_line_node.to_owned()
+                })
+            );
+            let ast_line_node = AstOperation::Context(Box::new(ast_line_node));
+            
+            match &mut node_ptr {
+                Union::Left(n) => {
+                    n.ordering.push(Union::Left(n.operations.len()));
+                    n.operations.push((ast_line_node, None));
+                },
+                Union::Right(n) => unsafe {
+                    (&mut **n).node.ordering.push(Union::Left((&mut **n).node.operations.len()));
+                    (&mut **n).node.operations.push((ast_line_node, None));
+                },
+            }
+            i += 1;
+        },
         Union::Right(ptr) => {
             let file = unsafe { &mut **ptr };
             handle_imports_and_exports(file, token_ptr.lock(), file_size);
@@ -260,12 +362,6 @@ fn generate_scoped_ast<'a>(
             }
         },
     }
-    let current_indent = {
-        if i + 1 >= file_size { 0 }
-        // grabbing the next line's indentation as any increase on scope will begin on the line before the scope change (such as the function/class def or conditional branch)
-        else { unsafe { *indent_ptr.lock().add(i + 1) } }
-    };
-    let start_index = i;
     while i < file_size {
         // Unsafe is the new safe! Copyright 2025 by Rust++ Foundation, all rights reserved.
         // Life is inherently unsafe, so why not accept all that life is?
@@ -276,9 +372,13 @@ fn generate_scoped_ast<'a>(
             { &*token_ptr.lock().add(i) }.1
         });
         match &mut node_ptr {
-            Union::Left(n) => n.operations.push(ast_line_node),
+            Union::Left(n) => {
+                n.ordering.push(Union::Left(n.operations.len()));
+                n.operations.push(ast_line_node);
+            },
             Union::Right(n) => unsafe {
-                (&mut **n).node.operations.push(ast_line_node)
+                (&mut **n).node.ordering.push(Union::Left((&mut **n).node.operations.len()));
+                (&mut **n).node.operations.push(ast_line_node);
             },
         }
         let tokens = unsafe { &mut *token_ptr.lock().add(i) };
@@ -317,6 +417,7 @@ fn generate_scoped_ast<'a>(
                         if !matches!(tokens.0[0].0, Token::Function(..)) {
                             n.operations.push((AstOperation::ScopeChange(n.children_scopes.len()), None));
                         }
+                        n.ordering.push(Union::Right(n.children_scopes.len()));
                         n.children_scopes.push(scoped_node);
                     },
                     Union::Right(n) => {
@@ -324,6 +425,7 @@ fn generate_scoped_ast<'a>(
                         if !matches!(tokens.0[0].0, Token::Function(..)) {
                             n.node.operations.push((AstOperation::ScopeChange(n.node.children_scopes.len()), None));
                         }
+                        n.node.ordering.push(Union::Right(n.node.children_scopes.len()));
                         n.node.children_scopes.push(scoped_node);
                     }
                 }
