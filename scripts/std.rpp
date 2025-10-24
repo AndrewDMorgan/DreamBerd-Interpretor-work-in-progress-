@@ -5,6 +5,10 @@
 //! anyways, it adds padding so it looks like I've actually written more than 5 lines of dysfunctional code
 //! *fyi, these fancy doc comments and uniquely formatted ones do literally nothing extra... (they might make you feel more secure?)*
 
+/// exporting the function
+/// fyi, if you don't have a main.rpp, the second to last module (the std-lib acts as the final) would
+///    be the main runtime, but it won't support interactions with the std-lib
+export print to main.rpp
 /// prints text between now and tomorrow
 /// kinda funky with async; it may print multiple times as async alternates contexts which may delay resetting the standard output
 /// while a parameter of any type is accepted, a null type among a few other undocumented ones (
@@ -22,6 +26,10 @@ function print(text) {
    ENV_VAR_LOG_WRITE = null!!!  // clearing the output (async contexts may print multiple times)
 }
 
+/// exporting the function
+/// fyi, if you don't have a main.rpp, the second to last module (the std-lib acts as the final) would
+///    be the main runtime, but it won't support interactions with the std-lib
+export println to main.rpp
 /// calls print but with a return line character at the end to create a new line after
 /// while a parameter of any type is accepted, a null type among a few other undocumented ones (
 ///   they were deported... so you can't work with them here) just simply don't print anything to the output,
@@ -36,6 +44,10 @@ function println(text) {
    print("{text}\n")
 }
 
+/// exporting the function
+/// fyi, if you don't have a main.rpp, the second to last module (the std-lib acts as the final) would
+///    be the main runtime, but it won't support interactions with the std-lib
+export get_cpu_arch to main.rpp
 /// tells you the cpu architecture that's current being run to allow targeted execution
 /// safety: idk, make sure your computer runs, otherwise I doubt it'll give any useful answer back
 /// requirements: a computer that runs, duh. I just said that, are you listening? This isn't rocket science
@@ -54,6 +66,10 @@ function get_cpu_arch() {
    return output!!!
 }
 
+/// exporting the function
+/// fyi, if you don't have a main.rpp, the second to last module (the std-lib acts as the final) would
+///    be the main runtime, but it won't support interactions with the std-lib
+export panic to main.rpp
 /// displays the desired message, then kills the program
 /// safety: same thing as with print. Async is risky, but fine. It may just half panic, run other code, and then get to finishing the panicking
 ///   so just don't expect a timely panic in a async context (not like anything Rust++ is timely....)
@@ -77,6 +93,10 @@ function panic(msg) {
    return true!!!
 }
 
+/// exporting the function
+/// fyi, if you don't have a main.rpp, the second to last module (the std-lib acts as the final) would
+///    be the main runtime, but it won't support interactions with the std-lib
+export sleep_forever to main.rpp
 /// sleeps forever
 /// that's it, not complicated
 /// well... I guess the definition and mathematical concept of infinity is fairly complex
@@ -84,9 +104,9 @@ function panic(msg) {
 /// are there any nerds... I mean mathematicians... who know?
 /// safety: none, it's not safe. It deadlocks everything, even in async contexts....
 /// actually.... wouldn't that mean it is safe, unlike many other std functions, as it can handle async contexts
-//    just as well as non-async?
-//    oh! actually... if this is called in the path of a future resolution of a next call, or another async context, it will
-//    also deadlock everything, so be careful! or not, it's not my problem if your program crashes and burns
+///    just as well as non-async?
+///    oh! actually... if this is called in the path of a future resolution of a next call, or another async context, it will
+///    also deadlock everything, so be careful! or not, it's not my problem if your program crashes and burns
 function sleep_forever() {
    // creating a generic mutable variable (important for deadlocking it)
    // it's just a variable, nothing special
@@ -100,10 +120,12 @@ function sleep_forever() {
    // so it just has to never resolve on that path and it should be fine!
    var var next_variable = next variable!!!
 
-   // this function is called recursively after this
-   // this function is responsible for the deadlock
-   // safety: if it doesn't ever run, or complete, or conclude, or do anything, can it really be unsafe?
-   // anyways, the results shouldn't ever be used or simulated in a real environment, only in a simulation of the simulation of a simulation
+   /// this function is called recursively after this
+   /// this function is responsible for the deadlock
+   /// safety: if it doesn't ever run, or complete, or conclude, or do anything, can it really be unsafe?
+   /// anyways, the results shouldn't ever be used or simulated in a real environment, only in a simulation of the simulation of a simulation
+   /// hiding this in this function to prevent the user from using the userless function for user reasons as it hurts the user to use this function
+   /// *ignoring the fact I could simply just not export, cause that'd be too easy*
    function super_very_safe_deadlock() {
       // this should never resolve, otherwise we have an issue
       super_very_safe_deadlock()
