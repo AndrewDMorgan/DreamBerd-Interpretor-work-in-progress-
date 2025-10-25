@@ -7,4 +7,4 @@ For now I'm instead referring to it as Rust++.
 
 Features, not bugs:
  * You may be asking why there isn't any importants. Well, the tariffs simply cost too much, so we'll export instead (correction; I may have both, and everything requires an export and import, only having one or the other results in a runtime or compile time error (depends on how nice I am, aka really just how lazy I am--very))!
- * A Standard Library!!! Does it work? idk, nothing runs yet, so it can't not work
+ * A Standard Library!!! Does it work? idk, nothing runs yet, so it can't not work. Anyways, in the claims people often make about Rust, if it compiles, it has to work, right?
