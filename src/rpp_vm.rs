@@ -1,6 +1,6 @@
-use crate::ast::{AstNode, AstNodeFileWrapper, AstOperation, Union};
+use crate::ast::{AstNode, AstNodeFileWrapper, AstOperation, Union, VariableType};
 use std::collections::HashMap;
-use crate::tokenizer::{Token};
+use crate::tokenizer;
 
 static mut DEBUG: bool = false;
 
@@ -123,7 +123,7 @@ struct VmEnvironment<'a> {
     
     // a path to the current scope in the ast, along with the actual operation line index for each corresponding scope
     line_index: Vec<usize>,  // the path is absolute, the stack is not (the stack is all visited functions in order, the index is the literal index to the current node)
-    stack_calls: Vec<(&'a str, usize)>,  // the stack can be used to resort the correct index when jumping between files
+    stack_calls: Vec<(String, usize)>,  // the stack can be used to resort the correct index when jumping between files
     line_indexes_reserved: Vec<usize>,
     
     node: Vec<AstNodeFileWrapper<'a>>,
@@ -193,7 +193,7 @@ impl<'a> VmEnvironment<'a> {
             if add_to_stack {
                 let index = self.line_index[1..self.line_index.len()].to_vec();
                 let node = Self::search_for_raw_node(&mut self.node[self.line_index[0]].node, index).unwrap();
-                self.stack_calls.push((node.name, node.base_line_index));
+                self.stack_calls.push((node.name.to_owned(), node.base_line_index));
             }
             add_to_stack = false;
             
@@ -204,7 +204,7 @@ impl<'a> VmEnvironment<'a> {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             else { unsafe { DEBUG = false; } }
-            let node = &node.0;  // mutability really wasn't needed, but always good to be safe, and the debug status isn't needed attached to it
+            let (node, line_number_root) = (&node.0, node.2);  // mutability really wasn't needed, but always good to be safe, and the debug status isn't needed attached to it
             
             // todo! increment the counter properly while accounting for scopes and functions (by pointer, closure, whatever)
             match node {
@@ -214,6 +214,66 @@ impl<'a> VmEnvironment<'a> {
                     self.line_index[i] = *index;
                     self.line_index.push(1);  // the 1 is to skip the definition of the scope which appears a second time
                     add_to_stack = true;
+                },
+                // variable name and expression for resolution of the value at runtime, if it's a reassignment or allocation
+                AstOperation::Assignment(var_name, expr, is_reassignment) => {
+                    let value = match expr {
+                        Some(Union::Right(val)) => { match val {
+                            crate::ast::Value::Variable(name) => { Value::Null },  // todo!
+                            crate::ast::Value::ConstStr(string) => { Value::Str(string) },
+                            crate::ast::Value::ConstInt(number) => { Value::Int(*number) },
+                            crate::ast::Value::ConstFloat(number) => { Value::Float(*number) }
+                            _ => { Value::Null }  // todo!
+                        }},
+                        Some(Union::Left(val)) => { Value::Null }  // todo!
+                        None => { Value::Null },
+                    };
+                    let name = match var_name.var_type {
+                        VariableType::Var(name) | VariableType::Array(name,..) | VariableType::Member(name,..) => name,
+                    };
+                    match is_reassignment {
+                        false => {
+                            self.variables.insert(name, vec![
+                                (value,
+                                 Lifetime::from_life(
+                                     var_name.lifetime.unwrap_or(&tokenizer::Lifetime::Infinity),
+                                     self.line_iteration,
+                                     self.line_index.clone()
+                                 ),
+                                 Mutability {
+                                    mutable: var_name.mutable.unwrap_or(false),
+                                     reassignable: var_name.reassignable.unwrap_or(false),
+                                     global_control: var_name.global.unwrap_or(&None).clone(),
+                                }, var_name.priority.unwrap_or(0))
+                            ]);
+                        }
+                        true => {
+                            let variable_entry = match self.variables.get_mut(name) {
+                                Some(entry) => entry,
+                                None => {
+                                    return Err(RuntimeError {
+                                        message: format!(
+                                            "Unable to find a variant of variable '{}' that is in scope and has a valid lifetime",
+                                            name
+                                        ),
+                                        location_name: format!(
+                                            "Error on line {} in {}",
+                                            line_number_root + 1,
+                                            self.node[self.line_index[0]].file_name
+                                        ),
+                                        error_type: RuntimeErrorType::VariableNotFound,
+                                        stack_trace: self.get_stack_trace(),
+                                    })
+                                }
+                            };
+                            // searching the entries for the one in scope with the highest priority
+                            // todo! for now picking the first to just test it
+                            variable_entry[0].0 = value;
+                        }
+                    }
+                    //println!("New assignment of sorts!\n{:?}", self.variables);
+                    let index = self.line_index.len() - 1;
+                    self.line_index[index] += 1;
                 },
                 _ => {
                     let index = self.line_index.len() - 1;
@@ -369,14 +429,14 @@ impl<'a> VmEnvironment<'a> {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 struct Mutability {
     mutable: bool,
     reassignable: bool,
     global_control: Option<bool>,  // once a value is assigned, nothing can ever touch it again is my understanding (except through this variable; dropping it means the value is deleted forever)
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 enum Value<'a> {
     Str (&'a str),
     Int (i64),
@@ -393,7 +453,7 @@ enum Value<'a> {
     Closure (AstNode<'a>), // name, parameters, index for path to body in base ast node, captured environment
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 struct Lifetime {
     start_time: std::time::Instant,
     start_line_counter: usize,
@@ -402,7 +462,25 @@ struct Lifetime {
     scope: Vec<usize>,
 }
 
-#[derive(Clone, PartialEq)]
+impl Lifetime {
+    pub fn from_life(lifetime: &tokenizer::Lifetime, line_counter: usize, scope: Vec<usize>) -> Self {
+        Self {
+            start_time: std::time::Instant::now(),
+            start_line_counter: line_counter,
+            alive_duration: match lifetime {
+                tokenizer::Lifetime::Seconds(seconds) => Some(*seconds as f64),
+                _ => None
+            },
+            alive_lines: match lifetime {
+                tokenizer::Lifetime::Lines(lines) => Some(*lines),
+                _ => None,
+            },
+            scope: scope,
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Debug)]
 enum Bool {
     True,
     False,

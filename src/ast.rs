@@ -8,7 +8,7 @@ pub struct AstNode<'a> {
     pub operations: Vec<(AstOperation<'a>, Option<bool>, usize)>,  // the option bool is for if the line is a debug line, the usize is the line number
     pub ordering: Vec<Union<usize, usize>>,  // left -> index to next ast op, right -> index to next child
     pub base_line_index: usize,
-    pub name: &'a str,
+    pub name: String,
     pub context: Option<Box<AstOperation<'a>>>,
 }
 
@@ -181,13 +181,13 @@ pub enum Value<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variable<'a> {
-    var_type: VariableType<'a>,
-    reassignable: Option<bool>,  // None means the parent contains the info (a reassignment/mutation)
-    mutable:Option< bool>,  // None means the parent contains the info (a reassignment/mutation)
+    pub var_type: VariableType<'a>,
+    pub reassignable: Option<bool>,  // None means the parent contains the info (a reassignment/mutation)
+    pub mutable:Option< bool>,  // None means the parent contains the info (a reassignment/mutation)
     // these can be lifetime 'a as 'a comes from main and these parameters come from tokens which are passed from main
-    global: Option<&'a Option<bool>>,  // None means the parent contains the info (a reassignment/mutation)
-    lifetime: Option<&'a tokenizer::Lifetime>,  // None means the parent contains the info (a reassignment/mutation)
-    priority: Option<isize>,  // None means the parent contains the info (a reassignment/mutation)
+    pub global: Option<&'a Option<bool>>,  // None means the parent contains the info (a reassignment/mutation)
+    pub lifetime: Option<&'a tokenizer::Lifetime>,  // None means the parent contains the info (a reassignment/mutation)
+    pub priority: Option<isize>,  // None means the parent contains the info (a reassignment/mutation)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -237,7 +237,10 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
             importing: vec![],
         });
         file.node.base_line_index = file_tokens[file_index][0].1;
-        file.node.name = "file root name";
+        file.node.name = match file_tokens[file_index][0].0[0].0 {
+            Token::FileHeader(name) => name.to_string(),
+            _ => "file root name".to_string(),
+        };
         files[file_index] = file;
         // creating the super safe pointers to pass into the threads....
         let token_ptr = PtrSync::new(unsafe {
@@ -418,7 +421,7 @@ fn generate_scoped_ast<'a>(
                 // create a new scope, calling this function recursively with that index, and waiting for a return
                 let mut scoped_node = AstNode::default();
                 scoped_node.base_line_index = tokens.1;
-                scoped_node.name = &match tokens.0.get(1){
+                scoped_node.name = match tokens.0.get(1) {
                     Some(v) => v.1,
                     // many operations are already condensed into a single expression token
                     None => match &tokens.0[0].0 {
@@ -426,7 +429,7 @@ fn generate_scoped_ast<'a>(
                         Token::Class(name) => name,
                         _ => "Unnamed",
                     }
-                }[..];  // todo!
+                }.to_string();  // todo!
                 let mut union = Union::Left(scoped_node);
                 i = generate_scoped_ast(token_ptr, indent_ptr, &mut union, i, file_size, {
                     let mut index = index.clone();
