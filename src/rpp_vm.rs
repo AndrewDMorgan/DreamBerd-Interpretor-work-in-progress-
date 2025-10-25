@@ -41,7 +41,7 @@ fn search_for_functions<'a>(
     }
     
     // searching through the current operations
-    for (i, (operation, _debug)) in node.operations.iter().enumerate() {
+    for (i, (operation, _debug, _line)) in node.operations.iter().enumerate() {
         if i == 0 { continue; }  // skipping the scope definition operation
         // searching for a function
         match operation {
@@ -157,7 +157,7 @@ impl<'a> VmEnvironment<'a> {
         }, index)
     }
     
-    fn search_for_node<'b>(node: &'b mut AstNode<'a>, mut index: Vec<usize>) -> Option<&'b mut (AstOperation<'a>, Option<bool>)> {
+    fn search_for_node<'b>(node: &'b mut AstNode<'a>, mut index: Vec<usize>) -> Option<&'b mut (AstOperation<'a>, Option<bool>, usize)> {
         if index.len() == 1 {
             return Some(node.operations.get_mut(index[0])?);
         }
@@ -186,7 +186,7 @@ impl<'a> VmEnvironment<'a> {
                             if self.line_index.len() == 1 { break; }
                             continue;
                         }
-                    } as *mut (AstOperation<'a>, Option<bool>)
+                    } as *mut (AstOperation<'a>, Option<bool>, usize)
                 )
             };
             

@@ -1,3 +1,68 @@
+
+======= hello.world =======
+
+fn testing
+   print "testing..."
+
+export testing to hello.world
+
+======= world.hello
+
+const var 🤯💀🔥 = 123!!
+const var ️❤️ = 456!!
+
+======= hello
+======= exported.exporting
+
+import testing as test from hello.world!!!!
+export test to main.rpp
+
+======= main.rpp =======
+import test from exported.exporting
+import print from std.rpp
+
+const const const world = hello world!!!!
+
+print("${next t}"?
+const var t = 32!!  // testing 1..2 function return
+const var t<-2s> = 3!¡¡¡
+const var v🍎❤️💀😁😔🏆🌏🖤🍍❤️🤍◾️d   (<-9> = 3¡¡
+var const 💀 = 10!!!!!!?
+var var ❤️ = hello!!!!!!!!!!!!!!!!!!
+const var b!
+var var string = "'" hello worldio function! "'"!!!!!!!
+const const 5 = 4!
+
+t += 1!!!?
+
+fnc pet g
+   fat
+      gun
+   nogood
+      why
+         testing
+   but_noooo?
+   function other_test_script g p t
+      return 4!!
+
+noop!
+
+fncion pello (hello, world) {  // testing 1..2 function return
+   return hello+world * 2
+
+const const test_var = "testing" ?
+   const const test_var = "printing"
+      const const test_var = "_no-oping" ?
+      const const test_var = "test"
+   const const test_var = "pello-ing"
+   const const test_var = "worlding"
+      const const test_var = "helloing"
+      const const test_var = "pello"
+   const const test_var = "returning"
+   const const test_var = "nopeing"
+
+const const test_var = "nah"?
+
 ======= std.rpp =======
 //! the official Rust++ Standard Library!
 //! ready for anytime your code is running too well
@@ -155,4 +220,3 @@ function sleep_forever() {
    // try calling the get_cpu_arch function, and make sure it's not actually a computer, otherwise that might be your issue
    return result!!
 }
-

@@ -5,7 +5,7 @@ use std::fmt::Display;
 #[derive(Default, Debug, Clone, PartialEq)]
 pub struct AstNode<'a> {
     pub children_scopes: Vec<AstNode<'a>>,
-    pub operations: Vec<(AstOperation<'a>, Option<bool>)>,  // the option bool is for if the line is a debug line
+    pub operations: Vec<(AstOperation<'a>, Option<bool>, usize)>,  // the option bool is for if the line is a debug line, the usize is the line number
     pub ordering: Vec<Union<usize, usize>>,  // left -> index to next ast op, right -> index to next child
     pub base_line_index: usize,
     pub name: &'a str,
@@ -37,15 +37,32 @@ impl<'a> AstNode<'a> {
         }
     }
     
-    pub fn get_text(&self, depth: usize) -> Vec<String> {
+    pub fn get_text(&self, depth: usize, output: &mut Vec<String>) -> Vec<String> {
         let mut text = vec![];
-        for ordered in &self.ordering {
+        for (index, ordered) in self.ordering.iter().enumerate() {
             match ordered {
                 Union::Left(op_index) => {
-                    text.push(format!("{}{}", "   ".repeat(depth), self.operations[*op_index].0.get_text()));
+                    let debug = match self.operations[*op_index].1 {
+                        Some(true) => "]",
+                        _ => ">"
+                    };
+                    output.push(format!("{}{}{:?}", match self.ordering.get(index + 1) {
+                        Some(Union::Right(new_scope)) => format!("{}{:4}:", debug, self.children_scopes[*new_scope].base_line_index + 1),
+                        _ => match ordered {
+                            Union::Left(op_index) => format!("{}{:4}:", debug, self.operations[*op_index].2 + 1),
+                            _ => String::from("     :"),
+                        },
+                    }, "   ".repeat(depth), &self.operations[*op_index].0));
+                    text.push(format!("{}{}{}", match self.ordering.get(index + 1) {
+                        Some(Union::Right(new_scope)) => format!("{}{:4}:", debug, self.children_scopes[*new_scope].base_line_index + 1),
+                        _ => match ordered {
+                            Union::Left(op_index) => format!("{}{:4}:", debug, self.operations[*op_index].2 + 1),
+                            _ => String::from("     :"),
+                        },
+                    }, "   ".repeat(depth), self.operations[*op_index].0.get_text()));
                 },
                 Union::Right(child_index) => {
-                    text.append(&mut self.children_scopes[*child_index].get_text(depth + 1));
+                    text.append(&mut self.children_scopes[*child_index].get_text(depth + 1, output));
                 }
             }
         } text
@@ -54,7 +71,7 @@ impl<'a> AstNode<'a> {
 
 impl Display for AstNode<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let text = self.get_text(1);
+        let text = self.get_text(1, &mut vec![]);
         
         write!(f, "{}", text.join("\n"))
     }
@@ -64,9 +81,10 @@ impl Display for AstNode<'_> {
 pub enum AstOperation<'a> {
     ScopeChange (usize),  // the local index to the new scope for the node
     Expr        (Expression<'a>),  // a mathematical expression
-    Assignment  (Variable<'a>, Option<Union<Expression<'a>, Value<'a>>>),  // variable name and expression for resolution of the value at runtime
+    Assignment  (Variable<'a>, Option<Union<Expression<'a>, Value<'a>>>, bool),  // variable name and expression for resolution of the value at runtime, if it's a reassignment or allocation
     None,
     Function    (&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
+    // todo! remember in the vm to make sure any called functions are of the same scope or lower when defined (same for classes)
     FunctionCall(&'a str, Vec<usize>, Vec<&'a str>),  // name, index, parameters
     Closure     (AstNode<'a>),  // the closure node (will require at least opening brackets to identify) todo! add closures
     Return      (Option<Union<Expression<'a>, Value<'a>>>),
@@ -92,24 +110,27 @@ impl AstOperation<'_> {
             AstOperation::Function(name, _index, parameters) => {
                 format!("Function '{}' with parameter(s) '{}'", name, parameters.join(", "))
             },
-            AstOperation::Assignment(var, optional_expression_or_const) => {
+            AstOperation::Assignment(var, optional_expression_or_const, is_reassignment) => {
                 let var_text = Self::get_var_text(var);
                 match optional_expression_or_const {
-                    Some(Union::Left(expr)) => {format!("expr")},  // todo!
+                    Some(Union::Left(expr)) => {format!("Set '{}' to expr {{ {:?} }}", Self::get_var_text(var), expr)},  // todo! (improve formatting for expressions)
                     Some(Union::Right(constant)) => {
-                        format!("Set '{}' to {}    ({} pointer to a {} value{})", var_text, match constant {
+                        format!("Set '{}' to {}    ({} pointer to a {} value{}{})", var_text, match constant {
                             Value::Variable(var) => format!("variable '{}'", Self::get_var_text(var)),
                             Value::ConstInt(value) => format!("int '{}'", value),
                             Value::ConstFloat(value) => format!("float '{}'", value),
                             Value::ConstStr(value) => format!("string '{}'", value),
                             Value::FuncCall(..) => format!("'Function call'"),  // todo!
-                        }, match var.reassignable {
+                        }, match var.reassignable.unwrap_or(false) {
                             true => "reassignable",
                             false => "constant",
-                        }, match var.mutable {
+                        }, match var.mutable.unwrap_or(false) {
                             true => "mutable",
                             false => "constant",
-                        }, match var.global {
+                        }, match is_reassignment {
+                            true => "; reassigning",
+                            false => "",
+                        }, match var.global.unwrap_or(&None) {
                             Some(true) => "; global scope--takes ownership of construct",
                             _ => ""
                         })
@@ -135,7 +156,7 @@ pub enum Union<L, R> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expression<'a> {
     left_op: Union<Box<Expression<'a>>, Value<'a>>,
-    operator: Box<Expression<'a>>,
+    operator: ExpressionOp,
     right_op: Union<Box<Expression<'a>>, Value<'a>>,
 }
 
@@ -161,12 +182,12 @@ pub enum Value<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variable<'a> {
     var_type: VariableType<'a>,
-    reassignable: bool,
-    mutable: bool,
+    reassignable: Option<bool>,  // None means the parent contains the info (a reassignment/mutation)
+    mutable:Option< bool>,  // None means the parent contains the info (a reassignment/mutation)
     // these can be lifetime 'a as 'a comes from main and these parameters come from tokens which are passed from main
-    global: &'a Option<bool>,
-    lifetime: &'a tokenizer::Lifetime,
-    priority: isize,
+    global: Option<&'a Option<bool>>,  // None means the parent contains the info (a reassignment/mutation)
+    lifetime: Option<&'a tokenizer::Lifetime>,  // None means the parent contains the info (a reassignment/mutation)
+    priority: Option<isize>,  // None means the parent contains the info (a reassignment/mutation)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -176,7 +197,7 @@ pub enum VariableType<'a> {
     Member    (&'a str, Box<Variable<'a>>),  // base reference following by member name (creates basically a linked list if multiple members are embedded)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AstNodeFileWrapper<'a> {
     pub node: AstNode<'a>,
     pub exporting: Vec<(Vec<usize>, &'a str)>,  // the indexes of the scopes in order to get to the exported function (the final index is the index of the operations instead of tree nodes)
@@ -203,7 +224,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
     println!("File tokens: {:?}", file_tokens);
     println!("File indents: {:?}", file_indents);
     
-    let mut files = vec![];
+    let mut files = vec![Box::new(AstNodeFileWrapper::default()); file_tokens.len()];
     let mut handles = vec![];
     for file_index in 0..file_tokens.len() {
         let file_size = file_tokens[file_index].len();
@@ -217,7 +238,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
         });
         file.node.base_line_index = file_tokens[file_index][0].1;
         file.node.name = "file root name";
-        files.push(file);
+        files[file_index] = file;
         // creating the super safe pointers to pass into the threads....
         let token_ptr = PtrSync::new(unsafe {
             // what a great idea
@@ -287,13 +308,14 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
         final_files.push(*file);
     }
     
+    let mut output = vec![];
     for (index, file) in final_files.iter().enumerate() {
-        if file.file_name == "main.rpp" || index == final_files.len() - 2 {
-            let text = file.node.get_text(1);
-            println!("Ast Text Formated:\n{}", text.join("\n"));
-            break;
-        }
+        output.push(format!("{:?}", file));
+        //if file.file_name == "main.rpp" || index == final_files.len() - 2 {
+        let text = file.node.get_text(1, &mut output);
+        println!("Ast Text Formated (file '{}'):\n{}", file.file_name, text.join("\n"));
     }
+    std::fs::write("./logs/debug_ast.txt", output.join("\n")).expect("Failed to write to ./logs/debug_ast.txt");
     
     final_files
 }
@@ -331,22 +353,23 @@ fn generate_scoped_ast<'a>(
         // grabbing the next line's indentation as any increase on scope will begin on the line before the scope change (such as the function/class def or conditional branch)
         else { unsafe { *indent_ptr.lock().add(i + 1) } }
     };
+    let line_number = unsafe { &*token_ptr.lock().add(i) }.1;
     let start_index = i;
     match &mut node_ptr {
         Union::Left(node) => {
             // grabbing the context
-            let ast_line_node = unsafe { get_ast_line(&(*token_ptr.lock().add(i)).0, &index, 0, (*token_ptr.lock().add(i)).1).0 };
+            let (ast_line_node, debug,..) = unsafe { get_ast_line(&(*token_ptr.lock().add(i)).0, &index, 0, (*token_ptr.lock().add(i)).1) };
             node.context = Some(Box::new(ast_line_node.to_owned()));
             let ast_line_node = AstOperation::Context(Box::new(ast_line_node));
             
             match &mut node_ptr {
                 Union::Left(n) => {
                     n.ordering.push(Union::Left(n.operations.len()));
-                    n.operations.push((ast_line_node, None));
+                    n.operations.push((ast_line_node, debug, line_number));
                 },
                 Union::Right(n) => unsafe {
                     (&mut **n).node.ordering.push(Union::Left((&mut **n).node.operations.len()));
-                    (&mut **n).node.operations.push((ast_line_node, None));
+                    (&mut **n).node.operations.push((ast_line_node, debug, line_number));
                 },
             }
             i += 1;
@@ -372,6 +395,7 @@ fn generate_scoped_ast<'a>(
         // Life is inherently unsafe, so why not accept all that life is?
         // Everything will find a way to segfault at some point, so why not make sure it happens sooner, and causes more damage?
         let tokens = unsafe { &*token_ptr.lock().add(i) };
+        let line_number = unsafe { &*token_ptr.lock().add(i) }.1;
         
         let ast_line_node = get_ast_line(&tokens.0, &index, i - start_index, unsafe {
             { &*token_ptr.lock().add(i) }.1
@@ -420,7 +444,7 @@ fn generate_scoped_ast<'a>(
                 match &mut node_ptr {
                     Union::Left(n) => {
                         if !matches!(tokens.0[0].0, Token::Function(..)) {
-                            n.operations.push((AstOperation::ScopeChange(n.children_scopes.len()), None));
+                            n.operations.push((AstOperation::ScopeChange(n.children_scopes.len()), None, line_number));
                         }
                         n.ordering.push(Union::Right(n.children_scopes.len()));
                         n.children_scopes.push(scoped_node);
@@ -428,7 +452,7 @@ fn generate_scoped_ast<'a>(
                     Union::Right(n) => {
                         let n = unsafe { &mut **n };
                         if !matches!(tokens.0[0].0, Token::Function(..)) {
-                            n.node.operations.push((AstOperation::ScopeChange(n.node.children_scopes.len()), None));
+                            n.node.operations.push((AstOperation::ScopeChange(n.node.children_scopes.len()), None, line_number));
                         }
                         n.node.ordering.push(Union::Right(n.node.children_scopes.len()));
                         n.node.children_scopes.push(scoped_node);
@@ -449,29 +473,72 @@ fn generate_scoped_ast<'a>(
 
 // given a single line of tokens, generate the given operation those tokens represent
 // any scope data should already be handled, so this should purely worry about the vector of tokens
-fn get_ast_line<'a>(tokens: &'a Vec<(Token<'a>, &'a str, usize, usize)>, index: &Vec<usize>, i: usize, line_number: usize) -> (AstOperation<'a>, Option<bool>) {
+fn get_ast_line<'a>(
+    tokens: &'a Vec<(Token<'a>, &'a str, usize, usize)>,
+    index: &Vec<usize>,
+    i: usize,
+    line_number: usize
+) -> (AstOperation<'a>, Option<bool>, usize) {
     let debug = tokens.iter().any(|(token,..)| {
-        *token == Token::Debug()
+        token == &Token::Debug()
     });
-    match &tokens[0] {
+    let mut result = match &tokens[0] {
         // How long did they say a line should be at most? It was 150% of a full 4k screen, right?
         (Token::Assign(is_const_1, is_const_2, optional_const, lifetime, name, expr, priority), text, start, size) => {
-            (AstOperation::Assignment(get_variable(*name, *is_const_1, *is_const_2, optional_const, lifetime, *priority), match expr {
+            Some((AstOperation::Assignment(get_variable(*name, *is_const_1, *is_const_2, optional_const, lifetime, *priority), match expr {
                 Some(expr) => get_expression(expr),
                 None => None
-            }), Some(debug))
+            }, false), Some(debug), line_number))
         },
         (Token::Function(name, parameters), _text, _start, _size) => {
-            (AstOperation::Function(name, {
+            Some((AstOperation::Function(name, {
                 let mut index = index.clone();
                 index.push(i);
                 index
-            }, parameters.clone()), Some(debug))
-        }
+            }, parameters.clone()), Some(debug), line_number))
+        },
         // TODO! add more operations here
-        (Token::String(..),..) => { (AstOperation::NoOp(tokens.to_owned(), line_number), Some(debug)) },
-        _ => { (AstOperation::None, Some(debug)) }
+        (Token::String(..),..) => { Some((AstOperation::NoOp(tokens.to_owned(), line_number), Some(debug), line_number)) },
+        _ => { None }
+    };
+    match tokens.get(1) {
+        Some((Token::Math(op, _sig_left, _sig_right, reassignment),..)) if *reassignment => {
+            // todo! handle expressions
+            result.replace((AstOperation::Assignment(
+                Variable {
+                    var_type: VariableType::Var(&tokens[0].1[tokens[0].2..tokens[0].3]),
+                    reassignable: None,
+                    mutable: None,
+                    global: None,
+                    lifetime: None,
+                    priority: None,
+                },
+                Some(Union::Left(Expression {
+                    left_op: Union::Right(Value::Variable(
+                        Variable {
+                            var_type: VariableType::Var(&tokens[0].1[tokens[0].2..tokens[0].3]),
+                            reassignable: None,
+                            mutable: None,
+                            global: None,
+                            lifetime: None,
+                            priority: None,
+                    })),
+                    operator: ExpressionOp::Add,
+                    // handle actual expressions here todo!
+                    right_op: Union::Right(
+                        match tokens.get(2) {
+                            Some((Token::Int(value),..)) => Value::ConstInt(*value as i64),
+                            Some((Token::Float(value),..)) => Value::ConstFloat(*value),
+                            Some((Token::String(value),..)) => Value::ConstStr(*value),
+                            _ => Value::ConstStr("unimplemented"),  // todo!
+                    }),
+                })),
+                true
+            ), Some(debug), line_number));
+        },
+        _ => {}
     }
+    result.unwrap_or((AstOperation::None, Some(debug), line_number))
 }
 
 fn get_variable<'a>(name: &'a str,
@@ -483,7 +550,7 @@ fn get_variable<'a>(name: &'a str,
 ) -> Variable<'a> {
     // this will need to not be this at some point
     // add members, arrays, and members or members of...
-    Variable { var_type: VariableType::Var(name), reassignable, mutable, global, lifetime, priority }  // TODO!
+    Variable { var_type: VariableType::Var(name), reassignable: Some(reassignable), mutable: Some(mutable), global: Some(global), lifetime: Some(lifetime), priority: Some(priority) }  // TODO!
 }
 
 fn get_expression<'a>(expr: &'a Vec<(Token<'_>, &'_ str, usize, usize)>) -> Option<Union<Expression<'a>, Value<'a>>> {

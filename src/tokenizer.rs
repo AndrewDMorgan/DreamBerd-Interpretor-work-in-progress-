@@ -16,7 +16,7 @@ pub enum Token<'a> {
     New      (),
     Int      (isize),
     Float    (f64),
-    Math     (MathOp, usize, usize),  // significance to left/right (number of spaces; less == higher importance)
+    Math     (MathOp, usize, usize, bool),  // significance to left/right (number of spaces; less == higher importance), bool is reassignment (+= vs. +)
     FileHeader (&'a str), // the name of the file
     Return   (),
     Delete   (),
@@ -523,6 +523,9 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
                     else { break; }
                 }
                 tokens.push((Token::Priority(priority), text, byte - token.len(), token.len()));
+                if line[index..].contains(&"?") {
+                    tokens.push((Token::Debug(), "?", 0, 1));
+                }
                 break;
             },
             "//" => { break; },
@@ -580,23 +583,23 @@ fn into_tokens<'a>(line: &mut Vec<&'a str>,
             "false" => { Token::Boolean(Boolean::False) },
             "maybe" => { Token::Boolean(Boolean::Maybe) },  // maybe so, maybe not. Maybe it's maybe, maybe it's none. Maybe maybe. So maybe is the maybe maybe
             
-            "+" => { Token::Math(MathOp::Add, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "-" => { Token::Math(MathOp::Subtract, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "*" => { Token::Math(MathOp::Multiply, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "/" => { Token::Math(MathOp::Divide, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "%" => { Token::Math(MathOp::Modulus, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "^" => { Token::Math(MathOp::Power, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "+=" => { Token::Math(MathOp::Add, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "-=" => { Token::Math(MathOp::Subtract, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "*=" => { Token::Math(MathOp::Multiply, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "/=" => { Token::Math(MathOp::Divide, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "%=" => { Token::Math(MathOp::Modulus, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "&&" => { Token::Math(MathOp::And, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "||" => { Token::Math(MathOp::Or, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "^^" => { Token::Math(MathOp::Xor, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "++" => { Token::Math(MathOp::Inc, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            "--" => { Token::Math(MathOp::Dec, get_significance(-1, &line, index), get_significance(1, &line, index)) },
-            ";" => { Token::Math(MathOp::Not, get_significance(-1, &line, index), get_significance(1, &line, index)) },
+            "+" => { Token::Math(MathOp::Add, get_significance(-1, &line, index), get_significance(1, &line, index), false) },
+            "-" => { Token::Math(MathOp::Subtract, get_significance(-1, &line, index), get_significance(1, &line, index), false) },
+            "*" => { Token::Math(MathOp::Multiply, get_significance(-1, &line, index), get_significance(1, &line, index), false) },
+            "/" => { Token::Math(MathOp::Divide, get_significance(-1, &line, index), get_significance(1, &line, index), false) },
+            "%" => { Token::Math(MathOp::Modulus, get_significance(-1, &line, index), get_significance(1, &line, index), false) },
+            "^" => { Token::Math(MathOp::Power, get_significance(-1, &line, index), get_significance(1, &line, index), false) },
+            "+=" => { Token::Math(MathOp::Add, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "-=" => { Token::Math(MathOp::Subtract, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "*=" => { Token::Math(MathOp::Multiply, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "/=" => { Token::Math(MathOp::Divide, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "%=" => { Token::Math(MathOp::Modulus, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "&&" => { Token::Math(MathOp::And, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "||" => { Token::Math(MathOp::Or, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "^^" => { Token::Math(MathOp::Xor, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "++" => { Token::Math(MathOp::Inc, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            "--" => { Token::Math(MathOp::Dec, get_significance(-1, &line, index), get_significance(1, &line, index), true) },
+            ";" => { Token::Math(MathOp::Not, get_significance(-1, &line, index), get_significance(1, &line, index), false) },
             
             "new" => { Token::New() },
             "class" => { Token::Class("") },
