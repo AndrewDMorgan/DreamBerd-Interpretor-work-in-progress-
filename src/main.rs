@@ -5,8 +5,6 @@ mod rpp_vm;
 use crate::ast::generate_embedded_ast;
 use crate::tokenizer::{tokenize};
 
-// todo! figure out why in the world on assignment tokens/ast ops the debug flag is not carrying over
-
 fn main() {
 
     // for the interpreter a clonable environment is necessary to handle future reference resolving

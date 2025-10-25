@@ -250,7 +250,7 @@ pub fn generate_embedded_ast<'a>(tokens: Vec<(Vec<(Token<'a>, &'a str, usize, us
             
             // when in doubt, or when the compiler keeps complaining, just make it static!
             // why can't we just call all data static? Just Dreamberd it and treat all lifetimes as infinity, what could ever go wrong?
-            std::mem::transmute::<&mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>, &'static mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>>(&mut file_tokens[file_index]).as_ptr()
+            std::mem::transmute::<&mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>, &'static mut Vec<(Vec<(Token, &str, usize, usize)>, usize)>>(&mut file_tokens[file_index]).as_mut_ptr()
         });
         let indent_ptr = PtrSync::new(unsafe {
             // what a great idea
@@ -343,7 +343,7 @@ fn handle_imports_and_exports<'a>(
 }
 
 fn generate_scoped_ast<'a>(
-    token_ptr: PtrSync<*const (Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
+    token_ptr: PtrSync<*mut (Vec<(Token<'a>, &'a str, usize, usize)>, usize)>,
     indent_ptr: PtrSync<*const usize>,
     mut node_ptr: &'_ mut Union<AstNode<'a>, *mut AstNodeFileWrapper<'a>>,
     mut i: usize,
@@ -361,7 +361,7 @@ fn generate_scoped_ast<'a>(
     match &mut node_ptr {
         Union::Left(node) => {
             // grabbing the context
-            let (ast_line_node, debug,..) = unsafe { get_ast_line(&(*token_ptr.lock().add(i)).0, &index, 0, (*token_ptr.lock().add(i)).1) };
+            let (ast_line_node, debug,..) = unsafe { get_ast_line(&mut (*token_ptr.lock().add(i)).0, &index, 0, (*token_ptr.lock().add(i)).1) };
             node.context = Some(Box::new(ast_line_node.to_owned()));
             let ast_line_node = AstOperation::Context(Box::new(ast_line_node));
             
@@ -397,10 +397,10 @@ fn generate_scoped_ast<'a>(
         // Unsafe is the new safe! Copyright 2025 by Rust++ Foundation, all rights reserved.
         // Life is inherently unsafe, so why not accept all that life is?
         // Everything will find a way to segfault at some point, so why not make sure it happens sooner, and causes more damage?
-        let tokens = unsafe { &*token_ptr.lock().add(i) };
+        let mut tokens = unsafe { &mut *token_ptr.lock().add(i) };
         let line_number = unsafe { &*token_ptr.lock().add(i) }.1;
         
-        let ast_line_node = get_ast_line(&tokens.0, &index, i - start_index, unsafe {
+        let ast_line_node = get_ast_line(&mut tokens.0, &index, i - start_index, unsafe {
             { &*token_ptr.lock().add(i) }.1
         });
         match &mut node_ptr {
@@ -482,12 +482,27 @@ fn get_ast_line<'a>(
     i: usize,
     line_number: usize
 ) -> (AstOperation<'a>, Option<bool>, usize) {
-    let debug = tokens.iter().any(|(token,..)| {
+    let mut debug = tokens.iter().any(|(token,..)| {
         token == &Token::Debug()
     });
     let mut result = match &tokens[0] {
         // How long did they say a line should be at most? It was 150% of a full 4k screen, right?
         (Token::Assign(is_const_1, is_const_2, optional_const, lifetime, name, expr, priority), text, start, size) => {
+            if let Some(expr) = expr {
+                let mut quotes = 0;
+                let mut direction = 1;
+                let mut quoted = false;
+                debug = expr.iter().any(|(token,..)| {
+                    if matches!(token, Token::SingleQ() | Token::DoubleQ()) {
+                        quotes += direction;
+                        quoted = true;
+                    } else if quotes > 0 {
+                        direction = -1;
+                    }
+                    token == &Token::Debug() && (quotes <= 0 || (direction == 1 && quotes == 0) || !quoted)
+                });
+            }
+            
             Some((AstOperation::Assignment(get_variable(*name, *is_const_1, *is_const_2, optional_const, lifetime, *priority), match expr {
                 Some(expr) => get_expression(expr),
                 None => None
@@ -558,24 +573,45 @@ fn get_variable<'a>(name: &'a str,
 
 fn get_expression<'a>(expr: &'a Vec<(Token<'_>, &'_ str, usize, usize)>) -> Option<Union<Expression<'a>, Value<'a>>> {
     // ideally, the tokenizer already simplified everything such that the type of expression is the first token; additional details may follow or be combined
+    // todo!!! make sure the simple constants don't take expressions or constants !! / ? as strings
+    let mut quoted = false;
+    let end = expr.iter().position(|(token,..)| {
+        match token {
+            // todo! track this correctly....
+            Token::DoubleQ() | Token::SingleQ() => {
+                quoted = true;
+                false
+            },
+            Token::Debug() | Token::Priority(..) if !quoted => true,
+            _ => false
+        }
+    }).unwrap_or(expr.len()).saturating_sub(1);
+    let expr = &expr[..=end];
+    let is_expr = expr.iter().any(|(token,..)| {
+        match token {
+            // would indicate a larger expression
+            Token::Boolean(..) | Token::Math(..) | Token::Compare(..) => true,
+            _ => false,
+        }
+    });
     match &expr[0].0 {
         // checking if it's a simple constant
-        Token::Int(int) if expr.len() == 1 => {
+        Token::Int(int) if !is_expr => {
             Some(Union::Right(Value::ConstInt(*int as i64)))
         },
-        Token::Float(float) if expr.len() == 1 => {
+        Token::Float(float) if !is_expr => {
             Some(Union::Right(Value::ConstFloat(*float)))
         },
-        Token::String(string) if expr.len() == 1 => {
-            Some(Union::Right(Value::ConstStr(*string)))
+        Token::String(string) if !is_expr => {
+            Some(Union::Right(Value::ConstStr(&expr[0].1[expr[0].2..])))
         },
+        // todo! this somehow got borken
         Token::SingleQ() | Token::DoubleQ() => {
-            let text = &expr[0].1[expr[0].2..];
-            let mut text = match expr[expr.len() - 1] {
-                (Token::Debug(),..) | (Token::Priority(..),..) => &text[..text.len() - 1],
-                _ => text
-            };  // trimming the final element if necessary
+            let mut text = &expr[0].1[expr[0].2..];  // trimming the final element(s) if necessary
             // searching for the starting size
+            while ["!", "?", "¡"].contains(&&text[text.len() - 1..]) {
+                text = &text[..text.len() - 1];
+            }
             let mut num_quotes = 0;
             for c in text.chars() {
                 match c {
@@ -585,31 +621,32 @@ fn get_expression<'a>(expr: &'a Vec<(Token<'_>, &'_ str, usize, usize)>) -> Opti
                 }
                 text = &text[1..];
             }
-            while text.ends_with('!') {
-                // removing the priority markings
-                text = &text[..text.len() - 1];
-            }
             // removing as many from the end as possible
+            let mut end = text.len();
             while num_quotes > 0 {
                 if text.ends_with('\'') {
-                    text = &text[..text.len() - 1];
+                    //text = &text[..text.len() - 1];
                     num_quotes -= 1;
+                    end -= 1;
                 } else if text.ends_with('"') {
-                    text = &text[..text.len() - 1];
+                    //text = &text[..text.len() - 1];
                     num_quotes -= 2;
+                    end -= 1;
                 } else { break; }
             }
-            Some(Union::Right(Value::ConstStr(text)))
+            Some(Union::Right(Value::ConstStr(&text[..end])))
         }
         // todo! if await is used, wrap that expression all in the await signifying that:
         //    * instead of looking into the future, store the call and conclude it later once finalized
         //    * such as when doing ```await next variable + 6``` where, the next value of variable is waited for until the expression and subsequently line is completed
         // TODO! add more expression types (such as actual expressions and not just constants)
         _exp => {
-            // assuming it's a string
-            Some(Union::Right(Value::ConstStr(
+            // assuming it's a string    todo! this is borken rn
+            Some(Union::Right(Value::ConstStr({
+                let end = &expr[end];
                 &expr[0].1[expr[0].2..]
-            )))
+                //&expr[0].1[expr[0].2..]
+            })))
         }
     }
 }
