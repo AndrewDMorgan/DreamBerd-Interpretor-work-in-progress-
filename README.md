@@ -1,7 +1,7 @@
 # DreamBerd-Interpretor-work-in-progress-
 Working on making an interpretor for dreamberd, no promises, and it won't support html or regex at least for now (probably never, but again, no promises).
 
-> :warning: *Everything is a parody. This is based on Dreamberd (now named The Gulf of Mexico). There are many jokes and parody aspects here, but none of them are really serious, and don't take it as such please!*
+> :warning: *Everything is a parody. This is based on Dreamberd (now named The Gulf of Mexico). There are many jokes and parody aspects here, but none of them are really serious, and don't take it as such please! The code is also intentionally dodgy in places (this is not meant to be production quality code).*
 
 For now I'm instead referring to it as Rust++.
 
